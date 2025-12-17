@@ -58,7 +58,7 @@ namespace mvll::inline cpp2x
 
     template <class Ref, class Val = void, class Alloc = void> class generator;
 
-    namespace gen
+    namespace internals
     {
         /// Referene type for a generator whose reference (first argument) and
         /// values (second argument) types are Ref and Val.
@@ -75,7 +75,7 @@ namespace mvll::inline cpp2x
         /// type predicator for the generator
         template <class> constexpr bool is_generator = false;
         template<class Val, class Ref, class Alloc>
-        constexpr bool is_generator<aux::generator<Val, Ref, Alloc>> = true;
+        constexpr bool is_generator<mvll::generator<Val, Ref, Alloc>> = true;
         /// Allocator and value type erased generator promise type.
         /// \tparam Yielded: The corresponding generators yielded type.
         template <class Yielded>
@@ -85,7 +85,7 @@ namespace mvll::inline cpp2x
             using yielded_decvref = std::remove_cvref_t<Yielded>;
             using value_ptr = std::add_pointer_t<Yielded>;
             using coro_handle = std::coroutine_handle<promise_erased>;
-            template <class, class, class> friend class ::aux::generator;
+            template <class, class, class> friend class ::mvll::generator;
             template <class Gen> struct recursive_awaiter;
             template <class> friend struct recursive_awaiter;
             struct copy_awaiter;
@@ -441,7 +441,7 @@ namespace mvll::inline cpp2x
         public:
             void* operator new(std::size_t sz) {
                 auto nsz = alloc_size_<void>(sz);
-                dealloc_fn d = [](void* ptr, std::size_t sz) {
+                dealloc_fn d = [](void* ptr, [[maybe_unused]] std::size_t sz) {
                     // TBD.
                     //::operator delete(__ptr, _M_alloc_size<void>(__sz));
                     ::operator delete(ptr);
@@ -468,7 +468,7 @@ namespace mvll::inline cpp2x
 
         template <class T>
         concept cv_unqualified_object = std::is_object_v<T> && std::same_as<T, std::remove_cv_t<T>>;
-    } // ::gen
+    } // ::internals
 
     template <class Ref, class Val, class Alloc>
     class generator : public std::ranges::view_interface<generator<Ref, Val, Alloc>>
@@ -476,11 +476,11 @@ namespace mvll::inline cpp2x
         using value = std::conditional_t<std::is_void_v<Val>,
                                          std::remove_cvref_t<Ref>,
                                          Val>;
-        static_assert(gen::cv_unqualified_object<value>,
+        static_assert(internals::cv_unqualified_object<value>,
                       "Generator value must be a cv-unqualified object type");
-        using reference = gen::reference_t<Ref, Val>;
+        using reference = internals::reference_t<Ref, Val>;
         static_assert(std::is_reference_v<reference>
-                      || (gen::cv_unqualified_object<reference> &&
+                      || (internals::cv_unqualified_object<reference> &&
                           std::copy_constructible<reference>),
                       "Generator reference type must be either a cv-unqualified "
                       "object type that is trivially constructible or a "
@@ -493,14 +493,14 @@ namespace mvll::inline cpp2x
         static_assert(std::common_reference_with<reference&&, value&&>);
         static_assert(std::common_reference_with<reference&&, rref&&>);
         static_assert(std::common_reference_with<rref&&, value const&>);
-        using yielded = gen::yield_t<reference>;
-        using erased_promise = gen::promise_erased<yielded>;
+        using yielded = internals::yield_t<reference>;
+        using erased_promise = internals::promise_erased<yielded>;
         struct iterator;
         friend erased_promise;
         friend struct erased_promise::subyield_state;
 
     public:
-        struct promise_type : erased_promise, gen::promise_alloc<Alloc>
+        struct promise_type : erased_promise, internals::promise_alloc<Alloc>
         {
             generator get_return_object() noexcept {
                 return {std::coroutine_handle<promise_type>::from_promise(*this)};

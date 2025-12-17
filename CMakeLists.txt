@@ -5,7 +5,7 @@ project(mvll)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_C_STANDARD 23)
+set(CMAKE_C_STANDARD 17)
 set(SYCL_FLAGS -fsycl -fsycl-targets=nvptx64-nvidia-cuda)
 
 find_package(PkgConfig REQUIRED)
@@ -18,9 +18,11 @@ pkg_get_variable(WaylandProtocolPath wayland-protocols pkgdatadir)
 set(XDG_SHELL_PROTOCOL              ${WaylandProtocolPath}/stable/xdg-shell/xdg-shell.xml)
 set(ZWP_TABLET_V2_PROTOCOL          ${WaylandProtocolPath}/unstable/tablet/tablet-unstable-v2.xml)
 set(ZWP_LINUX_DMABUF_V1_PROTOCOL    ${WaylandProtocolPath}/stable/linux-dmabuf/linux-dmabuf-v1.xml)
+set(WP_FRACTIONAL_SCALE_V1_PROTOCOL ${WaylandProtocolPath}/staging/fractional-scale/fractional-scale-v1.xml)
 message(XDG_SHELL_PROTOCOL="${XDG_SHELL_PROTOCOL}")
 message(ZWP_TABLET_V2_PROTOCOL="${ZWP_TABLET_V2_PROTOCOL}")
 message(ZWP_LINUX_DMA_BUF_V1="${ZWP_LINUX_DMABUF_V1_PROTOCOL}")
+message(WP_FRACTIONAL_SCALE_V1_PROTOCOL="$WP_FRACTIONAL_SCALE_V1_PROTOCOL}")
 add_custom_command(
   OUTPUT xdg-shell-private.c
   COMMAND wayland-scanner client-header ${XDG_SHELL_PROTOCOL} xdg-shell-client.h
@@ -33,39 +35,25 @@ add_custom_command(
   OUTPUT zwp-linux-dmabuf-v1-private.c
   COMMAND wayland-scanner client-header ${ZWP_LINUX_DMABUF_V1_PROTOCOL} zwp-linux-dmabuf-v1-client.h
   COMMAND wayland-scanner private-code  ${ZWP_LINUX_DMABUF_V1_PROTOCOL} zwp-linux-dmabuf-v1-private.c)
-add_library(mvll-host-code
-  mvll-host-code.cc
+add_custom_command(
+  OUTPUT wp-fractional-scale-v1-private.c
+  COMMAND wayland-scanner client-header ${ZWP_LINUX_DMABUF_V1_PROTOCOL} wp-fractional-scale-v1-client.h
+  COMMAND wayland-scanner private-code  ${ZWP_LINUX_DMABUF_V1_PROTOCOL} wp-fractional-scale-v1-private.c)
+
+add_library(mvll-wl-protocols
   xdg-shell-private.c
   zwp-tablet-v2-private.c
   zwp-linux-dmabuf-v1-private.c
-)
-target_compile_options(mvll-host-code PRIVATE
+  wp-fractional-scale-v1-private.c)
+target_compile_options(mvll-wl-protocols PRIVATE
   -Wall
-  -Wextra
-)
-target_include_directories(mvll-host-code PRIVATE
-  ${CMAKE_SOURCE_DIR}/include
-)
-
-#############################################################################
-add_library(mvll-device-code
-  mvll-host-code.cc
-)
-target_compile_options(mvll-device-code PRIVATE
-  -Wall
-  -Wextra
-  ${SYCL_FLAGS}
-)
-target_include_directories(mvll-device-code PRIVATE
-  ${CMAKE_SOURCE_DIR}/include
-)
-target_link_libraries(mvll-device-code PRIVATE
-  sycl
-)
+  -Wextra)
 
 #############################################################################
 add_executable(mvll
   main.cc
+  mvll-device-code.cc
+  mvll-host-code.cc
 )
 target_compile_options(mvll PRIVATE
   -Wall
@@ -73,18 +61,21 @@ target_compile_options(mvll PRIVATE
   ${SYCL_FLAGS}
 )
 target_include_directories(mvll PRIVATE
-  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_BINARY_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_link_libraries(mvll PRIVATE
   sycl
-  mvll-host-code
-  mvll-device-code
+  wayland-client
+  mvll-wl-protocols
 )
 
 #############################################################################
 enable_testing()
 add_executable(mvll-test
   mvll-test.cc
+  test/unique-test.cc
+  test/generator-test.cc
 )
 target_compile_options(mvll-test PRIVATE
   -Wall
@@ -95,6 +86,7 @@ target_include_directories(mvll-test PRIVATE
 )
 target_link_libraries(mvll-test PRIVATE
   sycl
+  wayland-client
   Catch2::Catch2WithMain
 )
 add_test(NAME run_mvll_test COMMAND mvll-test)
@@ -103,5 +95,5 @@ add_test(NAME run_mvll_test COMMAND mvll-test)
 add_custom_target(run
   DEPENDS mvll
   DEPENDS mvll-test
-  COMMAND ctest --verbose && ./mvll
+  COMMAND ctest --verbose && WAYLAND_DEBUG=1 ./mvll
 )

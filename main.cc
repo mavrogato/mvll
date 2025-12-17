@@ -1,9 +1,8 @@
 
 #include <iostream>
-#include <sycl/sycl.hpp>
+
+int display_run();
 
 int main() {
-    sycl::queue q;
-    std::cout << q.get_device().get_info<sycl::info::device::name>() << std::endl;
-    return 0;
+    return display_run();
 }
