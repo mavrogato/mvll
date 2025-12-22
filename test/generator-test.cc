@@ -144,4 +144,3 @@ TEST_CASE("conceptual cooperation", "[mvll][cpp2x][generator]") {
         ++count;
     }
 }
-

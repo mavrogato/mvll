@@ -18,6 +18,7 @@
 
 #include <concepts>
 #include <iosfwd>
+#include <string_view>
 #include <tuple>
 #include <utility>
 
@@ -41,6 +42,28 @@ namespace mvll::inline cpp2x
             requires std::same_as<
                 std::remove_reference_t<decltype (get<I>(t))>,
                 std::tuple_element_t<I, std::remove_const_t<T>>>;
+        };
+
+        /**
+         * @brief Output a value with quotations
+         */
+        template <class T>
+        struct quote {
+            T x;
+            constexpr quote(T x) : x{x} {}
+            template <class Ch, class Tr>
+            constexpr friend auto& operator<<(std::basic_ostream<Ch, Tr>& output, quote const& q) {
+                if constexpr (std::is_convertible_v<T, std::basic_string_view<Ch, Tr>>) {
+                    (output.put(Ch{'"'}) << q.x).put(Ch{'"'});
+                }
+                else if (std::is_same_v<T, Ch>) {
+                    (output.put(Ch{'\''}) << q.x).put(Ch{'\''});
+                }
+                else {
+                    output << q.x;
+                }
+                return output;
+            }
         };
     } // ::internals
 
@@ -70,14 +93,14 @@ namespace mvll::inline cpp2x
      * Output format is a lisp s-expression likes: (element1 element2 ...).
      */
     template <class Ch, class Tr, mvll::tuple_like T>
-    auto& operator<<(std::basic_ostream<Ch, Tr>& output, T const& t) {
-        output.put('(');
+    constexpr auto& operator<<(std::basic_ostream<Ch, Tr>& output, T const& t) {
+        output.put(Ch{'('});
         [&]<std::size_t... I>(std::index_sequence<I...>) {
             using std::get;
-            auto sep = "";
-            ((output << sep << get<I>(t), sep = " "), ...);
+            Ch sep[2]{};
+            ((output << sep << internals::quote{get<I>(t)}, sep[0] = Ch{' '}), ...);
         }(std::make_index_sequence<std::tuple_size_v<T>>());
-        output.put(')');
+        output.put(Ch{')'});
         return output;
     }
 } // ::mvll::cpp2x
