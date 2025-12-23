@@ -53,6 +53,11 @@ namespace mvll::inline cpp2x
             constexpr quote(T x) : x{x} {}
             template <class Ch, class Tr>
             constexpr friend auto& operator<<(std::basic_ostream<Ch, Tr>& output, quote const& q) {
+                if constexpr (std::is_pointer_v<std::decay_t<T>>) {
+                    if (q.x == nullptr) {
+                        return output << "nil";
+                    }
+                }
                 if constexpr (std::is_convertible_v<T, std::basic_string_view<Ch, Tr>>) {
                     (output.put(Ch{'"'}) << q.x).put(Ch{'"'});
                 }

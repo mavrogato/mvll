@@ -495,9 +495,12 @@ namespace mvll::inline cpp2x
         static_assert(std::common_reference_with<rref&&, value const&>);
         using yielded = internals::yield_t<reference>;
         using erased_promise = internals::promise_erased<yielded>;
-        struct iterator;
         friend erased_promise;
         friend struct erased_promise::subyield_state;
+
+    public:
+        // export as an additional interface
+        struct iterator;
 
     public:
         struct promise_type : erased_promise, internals::promise_alloc<Alloc>

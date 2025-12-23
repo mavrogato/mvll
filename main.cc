@@ -1,11 +1,17 @@
 
+#include <array>
 #include <filesystem>
-#include <functional>
 #include <iostream>
 #include <memory>
+#include <coroutine>
+#include <tuple>
 
+#include <mvll/unique.hpp>
+#include <mvll/cpp2x/generator.hpp>
+#include <mvll/cpp2x/tuple-support.hpp>
 #include <mvll/platform/linux.hpp>
 
+#include <type_traits>
 #include <wayland-client.h>
 
 #include <xdg-shell-client.h>
@@ -13,15 +19,50 @@
 
 namespace mvll
 {
+    template <class T> struct member_pointer_traits;
+    template <class R, class T>
+    struct member_pointer_traits<R T::*> {
+        using class_pointer_type = T;
+        using class_type = std::remove_pointer_t<T>;
+        using member_type = R;
+    };
+
+    template <class T> struct function_traits;
+    template <class R, class... Args>
+    struct function_traits<R (*)(Args...)> {
+        using return_type = R;
+        static constexpr std::size_t arity = sizeof...(Args);
+        using args_tuple = std::tuple<Args...>;
+        template <std::size_t N> using arg_t = std::tuple_element_t<N, args_tuple>;
+    };
+    template <class... Rest>
+    struct function_traits<void (*)(void*, Rest...)> {
+        using return_type = void;
+        static constexpr std::size_t rest_arity = sizeof...(Rest);
+        static constexpr std::size_t arity = 1 + rest_arity;
+        using rest_args_tuple = std::tuple<Rest...>;
+        using args_tuple = std::tuple<void*, Rest...>;
+        template <std::size_t N> using rest_arg_t = std::tuple_element_t<N, rest_args_tuple>;
+        template <std::size_t N> using arg_t = std::tuple_element_t<N, args_tuple>;
+    };
+
+    template <auto Member, class Listener, class Ref>
+    concept is_compatible_signature = std::is_member_pointer_v<decltype (Member)>
+        && std::is_same_v<typename member_pointer_traits<decltype (Member)>::class_type, Listener>
+        && std::is_same_v<typename function_traits<
+                              typename member_pointer_traits<decltype (Member)>::member_type
+                              >::rest_args_tuple,
+                          std::remove_cvref_t<Ref>>;
+
     struct empty_type { };
     template <class> constexpr wl_interface const *const interface_ptr = nullptr;
 
     template <class T> concept client_like = (interface_ptr<T> != nullptr);
 
-    template <client_like T> struct listener_type { using type = empty_type; };
+    template <client_like T> struct listener_type_holder { using type = empty_type; };
 #define INTERN_CLIENT_LIKE_CONCEPT(CLIENT, LISTENER)                             \
     template <> constexpr wl_interface const *const interface_ptr<CLIENT> = &CLIENT##_interface; \
-    template <> struct listener_type<CLIENT> : LISTENER { };
+    template <> struct listener_type_holder<CLIENT> { using type = LISTENER; };
     INTERN_CLIENT_LIKE_CONCEPT(wl_registry,           wl_registry_listener)
     INTERN_CLIENT_LIKE_CONCEPT(wl_compositor,         empty_type)
     INTERN_CLIENT_LIKE_CONCEPT(wl_output,             wl_output_listener)
@@ -41,8 +82,10 @@ namespace mvll
     INTERN_CLIENT_LIKE_CONCEPT(zwp_tablet_tool_v2,    zwp_tablet_tool_v2_listener)
 #undef INTERN_CLIENT_LIKE_CONCEPT
 
+    template <client_like T> using listener_type = listener_type_holder<T>::type;
+
     template <class T>
-    concept client_like_with_listener = client_like<T> && !std::is_base_of_v<empty_type, listener_type<T>>;
+    concept client_like_with_listener = client_like<T> && !std::is_same_v<empty_type, listener_type<T>>;
 
     template <client_like T>
     void client_deleter(T* raw) noexcept {
@@ -50,11 +93,12 @@ namespace mvll
         wl_proxy_destroy(reinterpret_cast<wl_proxy*>(raw));
     }
     template <client_like T>
-    auto make_unique(T* raw = nullptr) noexcept {
+    auto make_unique(T* raw) MVLL_NOEXCEPT {
+        MVLL_CHECK(raw);
         return std::unique_ptr<T, decltype (client_deleter<T>)*>(raw, client_deleter);
     }
     template <client_like T>
-    using unique_ptr_type = decltype (make_unique<T>());
+    using unique_ptr_type = decltype (make_unique<T>(std::declval<T*>()));
 
     template <class> class wrapper;
     template <class T> wrapper(T*) -> wrapper<T>;
@@ -62,47 +106,73 @@ namespace mvll
     template <client_like T>
     class wrapper<T> {
     public:
-        wrapper(T* raw = nullptr) : ptr{make_unique(raw)}
-            {
-            }
+        wrapper(T* raw) : ptr{make_unique(raw)} {}
         operator T*() const { return this->ptr.get(); }
 
     private:
         unique_ptr_type<T> ptr;
     };
 
+    bool fatal_handler(auto...) {
+        std::cerr << "Errno: " << errno << std::endl;
+        return true;
+    }
+
     template <client_like_with_listener T>
     class wrapper<T> {
     private:
-        static constexpr auto create_default_listener() {
-            static constexpr auto N = sizeof (listener_type<T>) / sizeof (void*);
-            return std::make_unique(listener_type<T>{
-                []<size_t... I>(std::index_sequence<I...>) noexcept {
+        static constexpr std::size_t SLOT_SIZE = sizeof (listener_type<T>) / sizeof (void*);
+        static constexpr auto create_default_listener() MVLL_NOEXCEPT {
+            return std::make_unique<listener_type<T>>(
+                []<size_t... I>(std::index_sequence<I...>) MVLL_NOEXCEPT {
                     return listener_type<T> {
-                        ([](void* data, auto...) noexcept {
-                            (void) I;
+                        ([](void* data, auto... rest) noexcept {
                             auto self = reinterpret_cast<wrapper*>(data);
+                            if (auto raw = self->slots[I]) {
+                                auto args = std::tuple{rest...};
+                                using args_type = decltype (args)&;
+                                using gene_type = mvll::generator<args_type>;
+                                using iter_type = gene_type::iterator;
+                                auto& iter = *static_cast<iter_type*>(raw);
+                                *iter = args;
+                                std::cerr << "Source args: " << *iter << std::endl;
+                                std::cerr << "Resume!" << std::endl;
+                                ++iter;
+                            }
                         })...
                     };
-                }(std::make_index_sequence<N>())});
+                }(std::make_index_sequence<SLOT_SIZE>()));
         }
 
     public:
-        wrapper(T* raw = nullptr) MVLL_NOEXCEPT
+        wrapper(T* raw) MVLL_NOEXCEPT
             : ptr{make_unique(raw)}
             , listener{create_default_listener()}
+            , slots{}
             {
                 MVLL_CHECK(ptr != nullptr);
-                MVLL_CHECK(0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(operator T*()),
-                                                      reinterpret_cast<void(**)(void)>(this->listener.get()),
-                                                      this));
+                MVLL_CHECK(-1 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(operator T*()),
+                                                       reinterpret_cast<void(**)(void)>(this->listener.get()),
+                                                       this));
             }
         operator T*() const { return this->ptr.get(); }
         listener_type<T>* operator->() const { return this->listener.get(); }
 
+        template <auto Member, class Ref, class Val = void, class Alloc>
+        requires is_compatible_signature<Member, listener_type<T>, Ref>
+        auto&& add_fiblet(mvll::cpp2x::generator<Ref, Val, Alloc>&& fiblet) MVLL_NOEXCEPT {
+            std::size_t ordinal = std::bit_cast<std::size_t>(Member);
+            auto iter = fiblet.begin();
+            slots[ordinal] = &iter;
+            return std::move(*reinterpret_cast<decltype (iter)*>(slots[ordinal]));
+        }
+
     private:
         unique_ptr_type<T> ptr;
         std::unique_ptr<listener_type<T>> listener;
+
+    public:
+        std::array<void*, SLOT_SIZE> slots{};
     };
 
     template <client_like T>
@@ -113,9 +183,8 @@ namespace mvll
     template <class T = std::uint32_t, wl_shm_format format = WL_SHM_FORMAT_ARGB8888, size_t bypp = 4>
     [[nodiscard]] inline auto shm_allocate_buffer(wl_shm* shm, size_t cx, size_t cy) MVLL_NOEXCEPT {
         std::string_view xdg_runtime_dir = std::getenv("XDG_RUNTIME_DIR");
-        if (xdg_runtime_dir.empty() || !std::filesystem::exists(xdg_runtime_dir)) {
-            MVLL_CHECK(!"No XDG_RUNTIME_DIR settings...");
-        }
+        MVLL_CHECK(!xdg_runtime_dir.empty());
+        MVLL_CHECK(std::filesystem::exists(xdg_runtime_dir));
         std::string tmp_path(xdg_runtime_dir);
         tmp_path += "/weston-shared-XXXXXX";
         mvll::platform::unique_fd fd{::mkostemp(tmp_path.data(), O_CLOEXEC)};
@@ -125,17 +194,37 @@ namespace mvll
         mvll::platform::unique_mmap<T> data{nullptr, bypp*cx*cy, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0};
         auto pool = wrapper{wl_shm_create_pool(shm, fd, bypp*cx*cy)};
         auto buffer = wrapper{wl_shm_pool_create_buffer(pool, 0, cx, cy, bypp * cx, format)};
-        return std::tuple{
-            std::move(fd),
-            std::move(buffer),
-            std::move(data),
-        };
+        return std::tuple{std::move(fd), std::move(buffer), std::move(data)};
     }
 } // ::mvll
-    
-extern int display_run();
+
+// extern int display_run();
 
 int main() {
-    std::cout << "Hi" << std::endl;
-    return display_run();
+    using mvll::operator<<;
+    auto display = mvll::make_unique<wl_display_connect, wl_display_disconnect>(nullptr);
+    auto registry = mvll::wrapper{wl_display_get_registry(display.get())};
+    static_assert(std::size(registry.slots) == 2);
+    auto consuming_fiblet = [&]() -> mvll::generator<std::tuple<wl_registry*,
+                                                                uint32_t,
+                                                                char const*,
+                                                                uint32_t>&> {
+        std::tuple<wl_registry*, uint32_t, char const*, uint32_t> args{};
+        for (;;) {
+            std::cerr << "Start!" << std::endl;
+            co_yield args;
+            std::cerr << "Received!" << std::endl;
+            std::cerr << "Received args: " << args << std::endl;
+        }
+    }();
+    auto iter = consuming_fiblet.begin();
+    registry.slots[0] = &iter;
+    wl_display_roundtrip(display.get());
+    registry.add_fiblet<&wl_registry_listener::global_remove>([&]() -> mvll::generator<std::tuple<wl_registry*, uint32_t>&> {
+            std::tuple<wl_registry*, uint32_t> args;
+            for (;;) {
+                co_yield args;
+            }
+        }());
+    return 0;
 }
