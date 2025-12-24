@@ -1,17 +1,19 @@
 
+#include "mvll/error-handling.hpp"
 #include <array>
+#include <bit>
+#include <coroutine>
 #include <filesystem>
 #include <iostream>
 #include <memory>
-#include <coroutine>
 #include <tuple>
+#include <type_traits>
 
-#include <mvll/unique.hpp>
 #include <mvll/cpp2x/generator.hpp>
 #include <mvll/cpp2x/tuple-support.hpp>
 #include <mvll/platform/linux.hpp>
+#include <mvll/unique.hpp>
 
-#include <type_traits>
 #include <wayland-client.h>
 
 #include <xdg-shell-client.h>
@@ -56,69 +58,67 @@ namespace mvll
 
     struct empty_type { };
     template <class> constexpr wl_interface const *const interface_ptr = nullptr;
-
-    template <class T> concept client_like = (interface_ptr<T> != nullptr);
-
-    template <client_like T> struct listener_type_holder { using type = empty_type; };
-#define INTERN_CLIENT_LIKE_CONCEPT(CLIENT, LISTENER)                             \
+    template <class T> concept client_proxy = (interface_ptr<T> != nullptr);
+    template <client_proxy T> struct listener_type_holder { using type = empty_type; };
+#define INTERN_CLIENT_PROXY_CONCEPT(CLIENT, LISTENER)                             \
     template <> constexpr wl_interface const *const interface_ptr<CLIENT> = &CLIENT##_interface; \
     template <> struct listener_type_holder<CLIENT> { using type = LISTENER; };
-    INTERN_CLIENT_LIKE_CONCEPT(wl_registry,           wl_registry_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(wl_compositor,         empty_type)
-    INTERN_CLIENT_LIKE_CONCEPT(wl_output,             wl_output_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(wl_shm,                wl_shm_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(wl_seat,               wl_seat_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(wl_surface,            wl_surface_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(wl_shm_pool,           empty_type)
-    INTERN_CLIENT_LIKE_CONCEPT(wl_buffer,             wl_buffer_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(wl_keyboard,           wl_keyboard_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(wl_pointer,            wl_pointer_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(wl_touch,              wl_touch_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(xdg_wm_base,           xdg_wm_base_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(xdg_surface,           xdg_surface_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(xdg_toplevel,          xdg_toplevel_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(zwp_tablet_manager_v2, empty_type)
-    INTERN_CLIENT_LIKE_CONCEPT(zwp_tablet_seat_v2,    zwp_tablet_seat_v2_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(zwp_tablet_tool_v2,    zwp_tablet_tool_v2_listener)
-#undef INTERN_CLIENT_LIKE_CONCEPT
-
-    template <client_like T> using listener_type = listener_type_holder<T>::type;
-
+    INTERN_CLIENT_PROXY_CONCEPT(wl_registry,           wl_registry_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(wl_compositor,         empty_type)
+    INTERN_CLIENT_PROXY_CONCEPT(wl_output,             wl_output_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(wl_shm,                wl_shm_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(wl_seat,               wl_seat_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(wl_surface,            wl_surface_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(wl_shm_pool,           empty_type)
+    INTERN_CLIENT_PROXY_CONCEPT(wl_buffer,             wl_buffer_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(wl_keyboard,           wl_keyboard_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(wl_pointer,            wl_pointer_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(wl_touch,              wl_touch_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(xdg_wm_base,           xdg_wm_base_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(xdg_surface,           xdg_surface_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(xdg_toplevel,          xdg_toplevel_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(zwp_tablet_manager_v2, empty_type)
+    INTERN_CLIENT_PROXY_CONCEPT(zwp_tablet_seat_v2,    zwp_tablet_seat_v2_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(zwp_tablet_tool_v2,    zwp_tablet_tool_v2_listener)
+#undef INTERN_CLIENT_PROXY_CONCEPT
+    template <client_proxy T> using listener_type = listener_type_holder<T>::type;
     template <class T>
-    concept client_like_with_listener = client_like<T> && !std::is_same_v<empty_type, listener_type<T>>;
+    concept client_proxy_with_listener = client_proxy<T> && !std::is_same_v<empty_type, listener_type<T>>;
 
-    template <client_like T>
+    template <client_proxy T>
     void client_deleter(T* raw) noexcept {
         MVLL_CHECK(raw);
         wl_proxy_destroy(reinterpret_cast<wl_proxy*>(raw));
     }
-    template <client_like T>
+    template <client_proxy T>
     auto make_unique(T* raw) MVLL_NOEXCEPT {
         MVLL_CHECK(raw);
-        return std::unique_ptr<T, decltype (client_deleter<T>)*>(raw, client_deleter);
+        return std::unique_ptr<T, std::decay_t<decltype (client_deleter<T>)>>(raw, client_deleter);
     }
-    template <client_like T>
+    template <client_proxy T>
     using unique_ptr_type = decltype (make_unique<T>(std::declval<T*>()));
 
     template <class> class wrapper;
     template <class T> wrapper(T*) -> wrapper<T>;
+    template <>
+    class wrapper<wl_display> {
+    public:
+        wrapper(wl_display* raw) MVLL_NOEXCEPT : ptr{raw, &wl_display_disconnect} {}
+        operator wl_display*() const { return this->ptr.get(); }        
 
-    template <client_like T>
+    private:
+        std::unique_ptr<wl_display, std::decay_t<decltype (wl_display_disconnect)>> ptr;
+    };
+    template <client_proxy T>
     class wrapper<T> {
     public:
-        wrapper(T* raw) : ptr{make_unique(raw)} {}
+        wrapper(T* raw) MVLL_NOEXCEPT : ptr{make_unique(raw)} {}
         operator T*() const { return this->ptr.get(); }
 
     private:
         unique_ptr_type<T> ptr;
     };
-
-    bool fatal_handler(auto...) {
-        std::cerr << "Errno: " << errno << std::endl;
-        return true;
-    }
-
-    template <client_like_with_listener T>
+    template <client_proxy_with_listener T>
     class wrapper<T> {
     private:
         static constexpr std::size_t SLOT_SIZE = sizeof (listener_type<T>) / sizeof (void*);
@@ -126,7 +126,7 @@ namespace mvll
             return std::make_unique<listener_type<T>>(
                 []<size_t... I>(std::index_sequence<I...>) MVLL_NOEXCEPT {
                     return listener_type<T> {
-                        ([](void* data, auto... rest) noexcept {
+                        ([](void* data, auto... rest) MVLL_NOEXCEPT {
                             auto self = reinterpret_cast<wrapper*>(data);
                             if (auto raw = self->slots[I]) {
                                 auto args = std::tuple{rest...};
@@ -135,8 +135,6 @@ namespace mvll
                                 using iter_type = gene_type::iterator;
                                 auto& iter = *static_cast<iter_type*>(raw);
                                 *iter = args;
-                                std::cerr << "Source args: " << *iter << std::endl;
-                                std::cerr << "Resume!" << std::endl;
                                 ++iter;
                             }
                         })...
@@ -161,10 +159,38 @@ namespace mvll
         template <auto Member, class Ref, class Val = void, class Alloc>
         requires is_compatible_signature<Member, listener_type<T>, Ref>
         auto&& add_fiblet(mvll::cpp2x::generator<Ref, Val, Alloc>&& fiblet) MVLL_NOEXCEPT {
-            std::size_t ordinal = std::bit_cast<std::size_t>(Member);
+            std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
             auto iter = fiblet.begin();
             slots[ordinal] = &iter;
             return std::move(*reinterpret_cast<decltype (iter)*>(slots[ordinal]));
+        }
+
+        template <auto Member> requires std::is_same_v<
+            typename member_pointer_traits<decltype (Member)>::class_type,
+            listener_type<T>>
+        auto&& fiblet(wl_display* display, bool const& quit = false) MVLL_NOEXCEPT {
+            using callback_type = member_pointer_traits<decltype (Member)>::member_type;
+            using rest_args_tuple = function_traits<callback_type>::rest_args_tuple;
+            return [this, &quit, display]() -> mvll::cpp2x::generator<rest_args_tuple> {
+                rest_args_tuple args;
+                bool dirty = false;
+                auto bridge = [&args, &dirty]() -> mvll::cpp2x::generator<rest_args_tuple&> {
+                    for (;;) {
+                        co_yield args;
+                        dirty = true;
+                    }
+                }();
+                std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
+                auto iter = bridge.begin();
+                this->slots[ordinal] = &iter;
+                while (!quit) {
+                    wl_display_dispatch(display);
+                    if (dirty) {
+                        co_yield args;
+                        dirty = false;
+                    }
+                }
+            };
         }
 
     private:
@@ -175,7 +201,7 @@ namespace mvll
         std::array<void*, SLOT_SIZE> slots{};
     };
 
-    template <client_like T>
+    template <client_proxy T>
     auto registry_bind(wl_registry* registry, uint32_t name, uint32_t version) noexcept {
         return static_cast<T*>(::wl_registry_bind(registry, name, interface_ptr<T>, version));
     }
@@ -202,28 +228,26 @@ namespace mvll
 
 int main() {
     using mvll::operator<<;
-    auto display = mvll::make_unique<wl_display_connect, wl_display_disconnect>(nullptr);
-    auto registry = mvll::wrapper{wl_display_get_registry(display.get())};
-    static_assert(std::size(registry.slots) == 2);
+    auto display = mvll::wrapper{wl_display_connect(nullptr)};
+    auto registry = mvll::wrapper{wl_display_get_registry(display)};
     auto consuming_fiblet = [&]() -> mvll::generator<std::tuple<wl_registry*,
                                                                 uint32_t,
                                                                 char const*,
                                                                 uint32_t>&> {
         std::tuple<wl_registry*, uint32_t, char const*, uint32_t> args{};
         for (;;) {
-            std::cerr << "Start!" << std::endl;
             co_yield args;
-            std::cerr << "Received!" << std::endl;
-            std::cerr << "Received args: " << args << std::endl;
+            std::cerr << args << std::endl;
         }
     }();
     auto iter = consuming_fiblet.begin();
     registry.slots[0] = &iter;
-    wl_display_roundtrip(display.get());
+    wl_display_roundtrip(display);
     registry.add_fiblet<&wl_registry_listener::global_remove>([&]() -> mvll::generator<std::tuple<wl_registry*, uint32_t>&> {
             std::tuple<wl_registry*, uint32_t> args;
             for (;;) {
                 co_yield args;
+                // TODO: reset std::optional<wrapper>
             }
         }());
     return 0;
