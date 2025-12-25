@@ -14,6 +14,7 @@
 #include <mvll/platform/linux.hpp>
 #include <mvll/unique.hpp>
 
+#include <wayland-client-core.h>
 #include <wayland-client.h>
 
 #include <xdg-shell-client.h>
@@ -98,13 +99,29 @@ namespace mvll
     template <client_proxy T>
     using unique_ptr_type = decltype (make_unique<T>(std::declval<T*>()));
 
+    struct fiblet_bridge {
+        virtual ~fiblet_bridge() noexcept = default;
+        virtual void resume(void const* rest_args_ptr) MVLL_NOEXCEPT = 0;
+    };
+    template <class Gen>
+    struct fiblet : fiblet_bridge {
+        Gen gen;
+        Gen::iterator iter;
+        fiblet(Gen&& g) MVLL_NOEXCEPT : gen{std::move(g)}, iter{gen.begin()} {}
+        void resume(void const* rest_args_ptr) MVLL_NOEXCEPT override {
+            using rest_args_tuple = std::remove_cvref_t<decltype(*iter)>;
+            *iter = *static_cast<rest_args_tuple const*>(rest_args_ptr);
+            ++iter;
+        }
+    };
+
     template <class> class wrapper;
     template <class T> wrapper(T*) -> wrapper<T>;
     template <>
     class wrapper<wl_display> {
     public:
         wrapper(wl_display* raw) MVLL_NOEXCEPT : ptr{raw, &wl_display_disconnect} {}
-        operator wl_display*() const { return this->ptr.get(); }        
+        operator wl_display*() const { return this->ptr.get(); }
 
     private:
         std::unique_ptr<wl_display, std::decay_t<decltype (wl_display_disconnect)>> ptr;
@@ -128,14 +145,9 @@ namespace mvll
                     return listener_type<T> {
                         ([](void* data, auto... rest) MVLL_NOEXCEPT {
                             auto self = reinterpret_cast<wrapper*>(data);
-                            if (auto raw = self->slots[I]) {
-                                auto args = std::tuple{rest...};
-                                using args_type = decltype (args)&;
-                                using gene_type = mvll::generator<args_type>;
-                                using iter_type = gene_type::iterator;
-                                auto& iter = *static_cast<iter_type*>(raw);
-                                *iter = args;
-                                ++iter;
+                            if (auto& bridge = self->slots[I]) {
+                                auto rest_args = std::tuple{rest...};
+                                bridge->resume(&rest_args);
                             }
                         })...
                     };
@@ -156,54 +168,40 @@ namespace mvll
         operator T*() const { return this->ptr.get(); }
         listener_type<T>* operator->() const { return this->listener.get(); }
 
-        template <auto Member, class Ref, class Val = void, class Alloc>
-        requires is_compatible_signature<Member, listener_type<T>, Ref>
-        auto&& add_fiblet(mvll::cpp2x::generator<Ref, Val, Alloc>&& fiblet) MVLL_NOEXCEPT {
-            std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
-            auto iter = fiblet.begin();
-            slots[ordinal] = &iter;
-            return std::move(*reinterpret_cast<decltype (iter)*>(slots[ordinal]));
-        }
-
         template <auto Member> requires std::is_same_v<
             typename member_pointer_traits<decltype (Member)>::class_type,
             listener_type<T>>
-        auto&& fiblet(wl_display* display, bool const& quit = false) MVLL_NOEXCEPT {
-            using callback_type = member_pointer_traits<decltype (Member)>::member_type;
-            using rest_args_tuple = function_traits<callback_type>::rest_args_tuple;
-            return [this, &quit, display]() -> mvll::cpp2x::generator<rest_args_tuple> {
-                rest_args_tuple args;
-                bool dirty = false;
-                auto bridge = [&args, &dirty]() -> mvll::cpp2x::generator<rest_args_tuple&> {
+        using rest_args_tuple = typename function_traits<
+            typename member_pointer_traits<decltype (Member)>::member_type>::rest_args_tuple;
+        template <auto Member, class Func>
+        auto fiblet_start(Func&& user_coro) MVLL_NOEXCEPT {
+            std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
+            auto bridge_coro = [user_coro = std::move(user_coro)]()
+                -> mvll::cpp2x::generator<rest_args_tuple<Member>&>
+                {
+                    rest_args_tuple<Member> rest_args{};
+                    auto user_gen = user_coro(rest_args);
+                    auto user_iter = user_gen.begin();
                     for (;;) {
-                        co_yield args;
-                        dirty = true;
+                        co_yield rest_args;
+                        if (user_iter != user_gen.end()) {
+                            ++user_iter;
+                        }
                     }
-                }();
-                std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
-                auto iter = bridge.begin();
-                this->slots[ordinal] = &iter;
-                while (!quit) {
-                    wl_display_dispatch(display);
-                    if (dirty) {
-                        co_yield args;
-                        dirty = false;
-                    }
-                }
-            };
+                };
+            auto bridge_gen = bridge_coro();
+            this->slots[ordinal].reset(new fiblet(std::move(bridge_gen)));
         }
 
     private:
         unique_ptr_type<T> ptr;
         std::unique_ptr<listener_type<T>> listener;
-
-    public:
-        std::array<void*, SLOT_SIZE> slots{};
+        std::array<std::unique_ptr<fiblet_bridge>, SLOT_SIZE> slots{};
     };
 
     template <client_proxy T>
-    auto registry_bind(wl_registry* registry, uint32_t name, uint32_t version) noexcept {
-        return static_cast<T*>(::wl_registry_bind(registry, name, interface_ptr<T>, version));
+    auto registry_bind(wl_registry* registry, uint32_t name, uint32_t version) MVLL_NOEXCEPT {
+        return MVLL_CHECK(static_cast<T*>(::wl_registry_bind(registry, name, interface_ptr<T>, version)));
     }
 
     template <class T = std::uint32_t, wl_shm_format format = WL_SHM_FORMAT_ARGB8888, size_t bypp = 4>
@@ -224,31 +222,16 @@ namespace mvll
     }
 } // ::mvll
 
-// extern int display_run();
-
 int main() {
     using mvll::operator<<;
     auto display = mvll::wrapper{wl_display_connect(nullptr)};
     auto registry = mvll::wrapper{wl_display_get_registry(display)};
-    auto consuming_fiblet = [&]() -> mvll::generator<std::tuple<wl_registry*,
-                                                                uint32_t,
-                                                                char const*,
-                                                                uint32_t>&> {
-        std::tuple<wl_registry*, uint32_t, char const*, uint32_t> args{};
+    registry.fiblet_start<&wl_registry_listener::global>([](auto& rest_args) -> mvll::generator<bool> {
         for (;;) {
-            co_yield args;
-            std::cerr << args << std::endl;
+            co_yield true;
+            std::cout << rest_args << std::endl;
         }
-    }();
-    auto iter = consuming_fiblet.begin();
-    registry.slots[0] = &iter;
+    });
     wl_display_roundtrip(display);
-    registry.add_fiblet<&wl_registry_listener::global_remove>([&]() -> mvll::generator<std::tuple<wl_registry*, uint32_t>&> {
-            std::tuple<wl_registry*, uint32_t> args;
-            for (;;) {
-                co_yield args;
-                // TODO: reset std::optional<wrapper>
-            }
-        }());
     return 0;
 }
