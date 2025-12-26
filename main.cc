@@ -2,12 +2,13 @@
 #include "mvll/error-handling.hpp"
 #include <array>
 #include <bit>
-#include <coroutine>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <tuple>
 #include <type_traits>
+
+#include <sycl/sycl.hpp>
 
 #include <mvll/cpp2x/generator.hpp>
 #include <mvll/cpp2x/tuple-support.hpp>
@@ -15,6 +16,7 @@
 #include <mvll/unique.hpp>
 
 #include <wayland-client-core.h>
+#include <wayland-client-protocol.h>
 #include <wayland-client.h>
 
 #include <xdg-shell-client.h>
@@ -60,6 +62,7 @@ namespace mvll
     struct empty_type { };
     template <class> constexpr wl_interface const *const interface_ptr = nullptr;
     template <class T> concept client_proxy = (interface_ptr<T> != nullptr);
+    template <client_proxy T> std::string_view interface_name = interface_ptr<T>->name;
     template <client_proxy T> struct listener_type_holder { using type = empty_type; };
 #define INTERN_CLIENT_PROXY_CONCEPT(CLIENT, LISTENER)                             \
     template <> constexpr wl_interface const *const interface_ptr<CLIENT> = &CLIENT##_interface; \
@@ -145,6 +148,9 @@ namespace mvll
                     return listener_type<T> {
                         ([](void* data, auto... rest) MVLL_NOEXCEPT {
                             auto self = reinterpret_cast<wrapper*>(data);
+                            std::cout << "Listener type: " << typeid (listener_type<T>).name()
+                                      << " Event index " << I << " fired. Slot state: "
+                                      << (self->slots[I] ? "Valid" : "Empty") << std::endl;
                             if (auto& bridge = self->slots[I]) {
                                 auto rest_args = std::tuple{rest...};
                                 bridge->resume(&rest_args);
@@ -158,14 +164,15 @@ namespace mvll
         wrapper(T* raw) MVLL_NOEXCEPT
             : ptr{make_unique(raw)}
             , listener{create_default_listener()}
-            , slots{}
+            , slots{SLOT_SIZE}
             {
                 MVLL_CHECK(ptr != nullptr);
                 MVLL_CHECK(-1 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(operator T*()),
                                                        reinterpret_cast<void(**)(void)>(this->listener.get()),
                                                        this));
             }
-        operator T*() const { return this->ptr.get(); }
+        T* get() const { return this->ptr.get(); }
+        operator T*() const { return this->get(); }
         listener_type<T>* operator->() const { return this->listener.get(); }
 
         template <auto Member> requires std::is_same_v<
@@ -174,9 +181,10 @@ namespace mvll
         using rest_args_tuple = typename function_traits<
             typename member_pointer_traits<decltype (Member)>::member_type>::rest_args_tuple;
         template <auto Member, class Func>
-        auto fiblet_start(Func&& user_coro) MVLL_NOEXCEPT {
+        void fiblet_start(Func&& user_coro) MVLL_NOEXCEPT {
             std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
-            auto bridge_coro = [user_coro = std::move(user_coro)]()
+            MVLL_CHECK(!this->slots[ordinal]);
+            auto bridge_coro = [](auto&& user_coro)
                 -> mvll::cpp2x::generator<rest_args_tuple<Member>&>
                 {
                     rest_args_tuple<Member> rest_args{};
@@ -189,22 +197,22 @@ namespace mvll
                         }
                     }
                 };
-            auto bridge_gen = bridge_coro();
+            auto bridge_gen = bridge_coro(std::move(user_coro));
             this->slots[ordinal].reset(new fiblet(std::move(bridge_gen)));
         }
 
     private:
         unique_ptr_type<T> ptr;
         std::unique_ptr<listener_type<T>> listener;
-        std::array<std::unique_ptr<fiblet_bridge>, SLOT_SIZE> slots{};
+        std::vector<std::unique_ptr<fiblet_bridge>> slots{SLOT_SIZE};
     };
 
     template <client_proxy T>
     auto registry_bind(wl_registry* registry, uint32_t name, uint32_t version) MVLL_NOEXCEPT {
-        return MVLL_CHECK(static_cast<T*>(::wl_registry_bind(registry, name, interface_ptr<T>, version)));
+        return wrapper{static_cast<T*>(::wl_registry_bind(registry, name, interface_ptr<T>, version))};
     }
 
-    template <class T = std::uint32_t, wl_shm_format format = WL_SHM_FORMAT_ARGB8888, size_t bypp = 4>
+    template <class T = std::uint32_t, wl_shm_format format = WL_SHM_FORMAT_XRGB8888, size_t bypp = 4>
     [[nodiscard]] inline auto shm_allocate_buffer(wl_shm* shm, size_t cx, size_t cy) MVLL_NOEXCEPT {
         std::string_view xdg_runtime_dir = std::getenv("XDG_RUNTIME_DIR");
         MVLL_CHECK(!xdg_runtime_dir.empty());
@@ -217,21 +225,111 @@ namespace mvll
         MVLL_CHECK(0 <= ::ftruncate(fd, bypp*cx*cy));
         mvll::platform::unique_mmap<T> data{nullptr, bypp*cx*cy, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0};
         auto pool = wrapper{wl_shm_create_pool(shm, fd, bypp*cx*cy)};
-        auto buffer = wrapper{wl_shm_pool_create_buffer(pool, 0, cx, cy, bypp * cx, format)};
-        return std::tuple{std::move(fd), std::move(buffer), std::move(data)};
+        auto buffer = wl_shm_pool_create_buffer(pool, 0, cx, cy, bypp * cx, format);
+        return std::tuple{std::move(fd), buffer, std::move(data)};
     }
 } // ::mvll
 
-int main() {
-    using mvll::operator<<;
-    auto display = mvll::wrapper{wl_display_connect(nullptr)};
-    auto registry = mvll::wrapper{wl_display_get_registry(display)};
-    registry.fiblet_start<&wl_registry_listener::global>([](auto& rest_args) -> mvll::generator<bool> {
-        for (;;) {
+int main(int, char** argv) {
+    using namespace mvll;
+    auto display = wrapper{wl_display_connect(nullptr)};
+    auto registry = wrapper{wl_display_get_registry(display)};
+    std::optional<wrapper<wl_compositor>> compositor;
+    std::optional<wrapper<wl_seat>> seat;
+    std::optional<wrapper<wl_shm>> shm;
+    std::optional<wrapper<xdg_wm_base>> shell;
+    registry.fiblet_start<&wl_registry_listener::global>
+        ([&]<class Rec>(this Rec&& rec, auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
+            auto const& [registry, name, interface, version] = rest_args;
+            co_yield true;
+            if (interface_name<wl_compositor> == interface) {
+                compositor.emplace(registry_bind<wl_compositor>(registry, name, version));
+            }
+            else if (interface_name<wl_seat> == interface) {
+                seat.emplace(registry_bind<wl_seat>(registry, name, version));
+            }
+            else if (interface_name<wl_shm> == interface) {
+                shm.emplace(registry_bind<wl_shm>(registry, name, version));
+            }
+            else if (interface_name<xdg_wm_base> == interface) {
+                shell.emplace(registry_bind<xdg_wm_base>(registry, name, version));
+            }
+            co_yield elements_of_adaptor{std::forward<Rec>(rec)(rest_args)};
+        });
+    registry.fiblet_start<&wl_registry_listener::global_remove>
+        ([&]<class Rec>(this Rec&& rec, auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
+            auto const& [registry, name] = rest_args;
+            co_yield true;
+            if (seat.has_value() && name == wl_proxy_get_id(reinterpret_cast<wl_proxy*>(seat.value().get()))) {
+                seat.reset();
+            }
+            co_yield elements_of_adaptor{std::forward<Rec>(rec)(rest_args)};
+        });
+    wl_display_roundtrip(display);
+
+    MVLL_CHECK(seat.has_value());
+    seat.value()->name = [](void*, auto... args) noexcept {
+        std::cout << std::tuple{args...} << std::endl;
+    };
+    seat.value()->capabilities = [](void*, auto... args) noexcept {
+        std::cout << std::tuple{args...} << std::endl;
+    };
+    wl_display_roundtrip(display);
+    MVLL_CHECK(seat.has_value());
+    auto pointer = wrapper{wl_seat_get_pointer(seat.value())};
+    pointer.fiblet_start<&wl_pointer_listener::axis_value120>
+        ([]<class Rec>(this Rec&& rec, auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
             co_yield true;
             std::cout << rest_args << std::endl;
-        }
-    });
-    wl_display_roundtrip(display);
+            co_yield elements_of_adaptor{std::forward<Rec>(rec)(rest_args)};
+        });
+
+    MVLL_CHECK(compositor.has_value());
+    MVLL_CHECK(shm.has_value());
+    MVLL_CHECK(shell.has_value());
+    auto surface = wrapper{wl_compositor_create_surface(compositor.value())};
+    auto xsurface = wrapper{xdg_wm_base_get_xdg_surface(shell.value(), surface)};
+    xsurface->configure = [](auto, auto xsurface, auto serial) noexcept {
+        xdg_surface_ack_configure(xsurface, serial);
+    };
+
+    std::size_t scale = 1;
+    std::size_t cx = 640 * scale;
+    std::size_t cy = 480 * scale;
+    auto [fd, buffer, pixels] = shm_allocate_buffer(shm.value(), cx, cy);
+    auto toplevel = wrapper{xdg_surface_get_toplevel(xsurface)};
+    xdg_toplevel_set_app_id(toplevel, std::filesystem::path(argv[0]).filename().c_str());
+    toplevel.fiblet_start<&xdg_toplevel_listener::configure>
+        ([&](auto& rest_args) MVLL_NOEXCEPT-> generator<bool> {
+            auto const& [toplevel, h, w, states] = rest_args;
+            for (;;) {
+                co_yield true;
+                cx = h * scale;
+                cy = w * scale;
+                if (cx * cy > 0) {
+                    std::tie(fd, buffer, pixels) = shm_allocate_buffer(shm.value(), cx, cy);
+                }
+            }
+        });
+    bool quit = false;
+    toplevel.fiblet_start<&xdg_toplevel_listener::close>
+        ([&]([[maybe_unused]] auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
+            co_yield true;
+            quit = true;
+            co_return;
+        });
+
+    // auto que = sycl::queue();
+    // std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
+
+    wl_surface_commit(surface);
+    while (-1 != wl_display_dispatch(display)) {
+        if (quit) break;
+        wl_surface_damage(surface, 0, 0, cx, cy);
+        wl_surface_attach(surface, buffer, 0, 0);
+        wl_surface_commit(surface);
+        wl_display_flush(display);
+    }
+
     return 0;
 }

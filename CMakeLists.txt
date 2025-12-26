@@ -8,6 +8,9 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_C_STANDARD 17)
 set(SYCL_FLAGS -fsycl -fsycl-targets=nvptx64-nvidia-cuda)
 
+# for clangd
+include_directories(${SYCL_INCLUDE_PATH})
+
 find_package(PkgConfig REQUIRED)
 find_package(Catch2 3.0 REQUIRED)
 
@@ -119,5 +122,5 @@ add_test(NAME run_mvll_test COMMAND mvll-test)
 add_custom_target(run
   DEPENDS mvll
   DEPENDS mvll-test
-  COMMAND ctest --verbose && WAYLAND_DEBUG=1 ./mvll
+  COMMAND ctest --verbose && ./mvll
 )

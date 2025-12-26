@@ -22,7 +22,7 @@ constexpr bool fatal_handler([[maybe_unused]] char const *const expr,
 /// Note: side effect free, and customizable by overwriting fatal_handler
 #define MVLL_CHECK(expr)                                      \
     (static_cast<bool>(expr) ? true :                         \
-     (fatal_handler(#expr) ? \
+     (fatal_handler(#expr) ?                                  \
       assert(!#expr), false : false))
 
 #endif /* INCLUDE_MVLL_ERROR_HANDLING_HPP */
