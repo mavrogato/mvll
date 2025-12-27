@@ -200,7 +200,7 @@ namespace mvll::inline cpp2x
                 auto bott = rest;
                 if (auto f = std::get_if<frame>(&rn.stack_))
                     // But, if we aren't, get the action bottom. We are only the second
-                    // frame if our parent is the bottom frame, i.e. it doesn't hav a
+                    // frame if our parent is the bottom frame, i.e. it doesn't have a
                     // frame member.
                     bott = f->bottom_;
                 this->stack_ = frame {

@@ -148,9 +148,6 @@ namespace mvll
                     return listener_type<T> {
                         ([](void* data, auto... rest) MVLL_NOEXCEPT {
                             auto self = reinterpret_cast<wrapper*>(data);
-                            std::cout << "Listener type: " << typeid (listener_type<T>).name()
-                                      << " Event index " << I << " fired. Slot state: "
-                                      << (self->slots[I] ? "Valid" : "Empty") << std::endl;
                             if (auto& bridge = self->slots[I]) {
                                 auto rest_args = std::tuple{rest...};
                                 bridge->resume(&rest_args);
@@ -164,7 +161,7 @@ namespace mvll
         wrapper(T* raw) MVLL_NOEXCEPT
             : ptr{make_unique(raw)}
             , listener{create_default_listener()}
-            , slots{SLOT_SIZE}
+            , slots{}
             {
                 MVLL_CHECK(ptr != nullptr);
                 MVLL_CHECK(-1 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(operator T*()),
@@ -182,7 +179,7 @@ namespace mvll
             typename member_pointer_traits<decltype (Member)>::member_type>::rest_args_tuple;
         template <auto Member, class Func>
         void fiblet_start(Func&& user_coro) MVLL_NOEXCEPT {
-            std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
+            static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
             MVLL_CHECK(!this->slots[ordinal]);
             auto bridge_coro = [](auto&& user_coro)
                 -> mvll::cpp2x::generator<rest_args_tuple<Member>&>
@@ -204,7 +201,7 @@ namespace mvll
     private:
         unique_ptr_type<T> ptr;
         std::unique_ptr<listener_type<T>> listener;
-        std::vector<std::unique_ptr<fiblet_bridge>> slots{SLOT_SIZE};
+        std::array<std::unique_ptr<fiblet_bridge>, SLOT_SIZE> slots{};
     };
 
     template <client_proxy T>
@@ -239,54 +236,58 @@ int main(int, char** argv) {
     std::optional<wrapper<wl_shm>> shm;
     std::optional<wrapper<xdg_wm_base>> shell;
     registry.fiblet_start<&wl_registry_listener::global>
-        ([&]<class Rec>(this Rec&& rec, auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
+        ([&](auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
             auto const& [registry, name, interface, version] = rest_args;
-            co_yield true;
-            if (interface_name<wl_compositor> == interface) {
-                compositor.emplace(registry_bind<wl_compositor>(registry, name, version));
+            for (;;) {
+                co_yield true;
+                if (interface_name<wl_compositor> == interface) {
+                    compositor.emplace(registry_bind<wl_compositor>(registry, name, version));
+                }
+                else if (interface_name<wl_seat> == interface) {
+                    seat.emplace(registry_bind<wl_seat>(registry, name, version));
+                }
+                else if (interface_name<wl_shm> == interface) {
+                    shm.emplace(registry_bind<wl_shm>(registry, name, version));
+                }
+                else if (interface_name<xdg_wm_base> == interface) {
+                    shell.emplace(registry_bind<xdg_wm_base>(registry, name, version));
+                }
             }
-            else if (interface_name<wl_seat> == interface) {
-                seat.emplace(registry_bind<wl_seat>(registry, name, version));
-            }
-            else if (interface_name<wl_shm> == interface) {
-                shm.emplace(registry_bind<wl_shm>(registry, name, version));
-            }
-            else if (interface_name<xdg_wm_base> == interface) {
-                shell.emplace(registry_bind<xdg_wm_base>(registry, name, version));
-            }
-            co_yield elements_of_adaptor{std::forward<Rec>(rec)(rest_args)};
         });
     registry.fiblet_start<&wl_registry_listener::global_remove>
-        ([&]<class Rec>(this Rec&& rec, auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
+        ([&](auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
             auto const& [registry, name] = rest_args;
-            co_yield true;
-            if (seat.has_value() && name == wl_proxy_get_id(reinterpret_cast<wl_proxy*>(seat.value().get()))) {
-                seat.reset();
+            for (;;) {
+                co_yield true;
+                if (seat.has_value() && name == wl_proxy_get_id(reinterpret_cast<wl_proxy*>(seat.value().get()))) {
+                    seat.reset();
+                }
             }
-            co_yield elements_of_adaptor{std::forward<Rec>(rec)(rest_args)};
         });
     wl_display_roundtrip(display);
 
-    MVLL_CHECK(seat.has_value());
-    seat.value()->name = [](void*, auto... args) noexcept {
-        std::cout << std::tuple{args...} << std::endl;
-    };
-    seat.value()->capabilities = [](void*, auto... args) noexcept {
-        std::cout << std::tuple{args...} << std::endl;
-    };
-    wl_display_roundtrip(display);
+    if (seat.has_value()) {
+        wl_display_roundtrip(display);
+    }
     MVLL_CHECK(seat.has_value());
     auto pointer = wrapper{wl_seat_get_pointer(seat.value())};
-    pointer.fiblet_start<&wl_pointer_listener::axis_value120>
-        ([]<class Rec>(this Rec&& rec, auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
-            co_yield true;
-            std::cout << rest_args << std::endl;
-            co_yield elements_of_adaptor{std::forward<Rec>(rec)(rest_args)};
+    pointer.fiblet_start<&wl_pointer_listener::frame>
+        ([](auto&) -> generator<bool> {
+            for(;;) co_yield true;
         });
-
+    pointer.fiblet_start<&wl_pointer_listener::axis_value120>
+        ([](auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
+            for (;;) {
+                co_yield true;
+                std::cout << rest_args << std::endl;
+            }
+        });
     MVLL_CHECK(compositor.has_value());
     MVLL_CHECK(shm.has_value());
     MVLL_CHECK(shell.has_value());
+    shell.value()->ping = [](auto, auto shell, auto serial) noexcept {
+        xdg_wm_base_pong(shell, serial);
+    };
     auto surface = wrapper{wl_compositor_create_surface(compositor.value())};
     auto xsurface = wrapper{xdg_wm_base_get_xdg_surface(shell.value(), surface)};
     xsurface->configure = [](auto, auto xsurface, auto serial) noexcept {
