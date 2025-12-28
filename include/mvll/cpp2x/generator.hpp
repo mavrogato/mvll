@@ -535,6 +535,9 @@ namespace mvll::inline cpp2x
         }
         std::default_sentinel_t end() const noexcept { return std::default_sentinel; }
 
+        // an additional
+        std::coroutine_handle<> handle() const noexcept { return this->coro_; }
+
     private:
         using coro_handle = std::coroutine_handle<erased_promise>;
         generator(std::coroutine_handle<promise_type> coro) noexcept

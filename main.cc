@@ -104,17 +104,21 @@ namespace mvll
 
     struct fiblet_bridge {
         virtual ~fiblet_bridge() noexcept = default;
-        virtual void resume(void const* rest_args_ptr) MVLL_NOEXCEPT = 0;
+        // virtual void resume(void const* rest_args_ptr) MVLL_NOEXCEPT = 0;
+        virtual void resume() = 0;
     };
     template <class Gen>
     struct fiblet : fiblet_bridge {
         Gen gen;
-        Gen::iterator iter;
-        fiblet(Gen&& g) MVLL_NOEXCEPT : gen{std::move(g)}, iter{gen.begin()} {}
-        void resume(void const* rest_args_ptr) MVLL_NOEXCEPT override {
-            using rest_args_tuple = std::remove_cvref_t<decltype(*iter)>;
-            *iter = *static_cast<rest_args_tuple const*>(rest_args_ptr);
-            ++iter;
+        // Gen::iterator iter;
+        fiblet(Gen&& g) MVLL_NOEXCEPT : gen{std::move(g)}/*, iter{gen.begin()}*/ {}
+        // void resume(void const* rest_args_ptr) MVLL_NOEXCEPT override {
+        //     using rest_args_tuple = std::remove_cvref_t<decltype(*iter)>;
+        //     *iter = *static_cast<rest_args_tuple const*>(rest_args_ptr);
+        //     ++iter;
+        // }
+        virtual void resume() MVLL_NOEXCEPT override {
+            gen.handle().resume();
         }
     };
 
@@ -150,7 +154,9 @@ namespace mvll
                             auto self = reinterpret_cast<wrapper*>(data);
                             if (auto& bridge = self->slots[I]) {
                                 auto rest_args = std::tuple{rest...};
-                                bridge->resume(&rest_args);
+                                //bridge->resume(&rest_args);
+                                self->latest_args_raw = &rest_args;
+                                bridge->resume();
                             }
                         })...
                     };
@@ -162,6 +168,7 @@ namespace mvll
             : ptr{make_unique(raw)}
             , listener{create_default_listener()}
             , slots{}
+            , latest_args_raw{}
             {
                 MVLL_CHECK(ptr != nullptr);
                 MVLL_CHECK(-1 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(operator T*()),
@@ -177,6 +184,27 @@ namespace mvll
             listener_type<T>>
         using rest_args_tuple = typename function_traits<
             typename member_pointer_traits<decltype (Member)>::member_type>::rest_args_tuple;
+
+        template <auto Member>
+        auto& generator(wl_display* display) MVLL_NOEXCEPT {
+            static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
+            MVLL_CHECK(!this->slots[ordinal]);
+            auto bridge_coro = [](wrapper* self, wl_display* display)
+                -> mvll::cpp2x::generator<rest_args_tuple<Member> const&> {
+                for (;;) {
+                    static auto ret = wl_display_dispatch(display);
+                    MVLL_CHECK(self->latest_args_raw);
+                    co_yield *reinterpret_cast<rest_args_tuple<Member>*>(self->latest_args_raw);
+                    self->latest_args_raw = nullptr;
+                }
+            };
+            auto bridge_gen = bridge_coro(this, display);
+            auto pinned_fiblet = new fiblet{std::move(bridge_gen)};
+            auto& pinned_gen_ref = pinned_fiblet->gen;
+            this->slots[ordinal].reset(pinned_fiblet);
+            return pinned_gen_ref;
+        }
+
         template <auto Member, class Func>
         void fiblet_start(Func&& user_coro) MVLL_NOEXCEPT {
             static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
@@ -202,6 +230,7 @@ namespace mvll
         unique_ptr_type<T> ptr;
         std::unique_ptr<listener_type<T>> listener;
         std::array<std::unique_ptr<fiblet_bridge>, SLOT_SIZE> slots{};
+        void* latest_args_raw{};
     };
 
     template <client_proxy T>
@@ -227,6 +256,18 @@ namespace mvll
     }
 } // ::mvll
 
+int main() {
+    using namespace mvll;
+    auto display = wrapper{wl_display_connect(nullptr)};
+    auto registry = wrapper{wl_display_get_registry(display)};
+    auto& globals = registry.generator<&wl_registry_listener::global>(display);
+    for (auto item : globals) {
+        std::cout << item << std::endl;
+    }
+    return 0;
+}
+
+#if 0
 int main(int, char** argv) {
     using namespace mvll;
     auto display = wrapper{wl_display_connect(nullptr)};
@@ -334,3 +375,4 @@ int main(int, char** argv) {
 
     return 0;
 }
+#endif

@@ -144,3 +144,43 @@ TEST_CASE("conceptual cooperation", "[mvll][cpp2x][generator]") {
         ++count;
     }
 }
+
+// TEST_CASE("with awaiter", "[mvll][cpp2x][generator]") {
+//     std::coroutine_handle<> current_suspending_handle{};
+//     void* latest_args_raw{};
+//     auto wait = [&]{
+//         struct awaiter {
+//             std::coroutine_handle<>& handle;
+//             void* args_raw;
+//             bool await_ready() const noexcept { return false; }
+//             void await_suspend(std::coroutine_handle<> h) {
+//                 this->handle = h;
+//             }
+//             void* await_resume() const noexcept {
+//                 return this->args_raw;
+//             }
+//         };
+//         return awaiter{current_suspending_handle, latest_args_raw};
+//     };
+//     auto coro_with_wait = [wait]() -> mvll::cpp2x::generator<int> {
+//         co_yield 1;
+//         co_yield 2;
+//         co_await wait();
+//         co_yield 3;
+//     };
+//     // for (auto item : coro_with_wait()) {
+//     //     std::cout << item << std::endl;
+//     // }
+//     auto gen_with_wait = coro_with_wait();
+//     auto driver = [&]<class Rec>(this Rec&& rec, int n = 10) -> mvll::cpp2x::generator<bool> {
+//         if (n == 0) {
+//             co_return;
+//         }
+//         co_yield true;
+//         for (auto item : gen_with_wait) { std::cout << item << std::endl; }
+//         //co_yield mvll::cpp2x::elements_of_adaptor{std::forward<Rec>(rec)(n - 1)};
+//     };
+//     for (auto item : driver()) {
+//         std::cout << std::boolalpha << item << ":" << current_suspending_handle.address() << std::endl;
+//     }
+// }
