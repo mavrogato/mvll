@@ -97,6 +97,7 @@ add_executable(mvll-test
   mvll-test.cc
   test/unique-test.cc
   test/generator-test.cc
+  test/channel-test.cc
 )
 target_compile_definitions(mvll PRIVATE
   HERSHEY_FONTS_DIR="${HERSHEY_DATA_DIR}"
