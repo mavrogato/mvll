@@ -2,9 +2,9 @@
 #define INCLUDE_CHANNEL_HPP
 
 #include <coroutine>
-#include <type_traits>
 #include <utility>
-#include <variant>
+
+#include <mvll/error-handling.hpp>
 
 namespace mvll
 {
@@ -13,9 +13,9 @@ namespace mvll
         struct promise_type;
         using handle_type = std::coroutine_handle<promise_type>;
         struct promise_type {
-            using storage_type = std::conditional_t<std::is_void_v<PUSH>, std::monostate, PUSH>;
-            storage_type push_val;
-            PULL const* pull_ptr;
+            PUSH* push_ptr;
+            PULL* pull_ptr;
+            std::coroutine_handle<> previous;
             auto get_return_object() noexcept {
                 return channel{handle_type::from_promise(*this)};
             }
@@ -23,31 +23,28 @@ namespace mvll
             std::suspend_always final_suspend() const noexcept { return {}; }
             void unhandled_exception() { throw; }
             void return_void() const noexcept {}
-            auto yield_value(PULL const& yielded) {
-                pull_ptr = &yielded;
-                struct awaiter {
-                    PUSH* push_ptr;
+            auto yield_value(PULL* yielded_ptr) {
+                this->pull_ptr = yielded_ptr;
+                struct yield_awaiter {
+                    promise_type& self;
                     bool await_ready() const noexcept { return false; }
-                    PUSH* await_resume() noexcept { return push_ptr; }
+                    PUSH* await_resume() noexcept { return self.push_ptr; }
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<>) {
-                        return std::noop_coroutine();
+                        return self.previous ? self.previous : std::noop_coroutine();
                     }
                 };
-                if constexpr (std::is_void_v<PUSH>) {
-                    return awaiter{nullptr};
-                }
-                else {
-                    return awaiter{&this->push_val};
-                }
+                return yield_awaiter{*this};
             }
         };
         struct awaiter {
             handle_type target;
-            PUSH push_val;
+            PUSH *pass_ptr;
             bool await_ready() const noexcept { return false; }
             void await_resume() const noexcept {}
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<>) {
-                target.promise().push_val = std::move(push_val);
+            std::coroutine_handle<> await_suspend(std::coroutine_handle<> current) {
+                MVLL_CHECK(!target.promise().previous);
+                target.promise().previous = current;
+                target.promise().push_ptr = this->pass_ptr;
                 return target;
             }
         };
@@ -75,15 +72,13 @@ namespace mvll
         }
 
     public:
-        void push(PUSH&& push_val) const requires (!std::is_void_v<PUSH>) {
-            handle.promise().push_val = std::move(push_val);
+        void push(PUSH* push_ptr) const  {
+            handle.promise().previous = nullptr;
+            handle.promise().push_ptr = push_ptr;
             handle.resume();
         }
-        void push() const requires std::is_void_v<PUSH> {
-            handle.resume();
-        }
-        PULL const& pull() const {
-            return *handle.promise().pull_ptr;
+        PULL* pull() const {
+            return handle.promise().pull_ptr;
         }
         void resume() const {
             handle.resume();
@@ -91,8 +86,8 @@ namespace mvll
         bool done() const {
             return handle.done();
         }
-        awaiter pass(PUSH&& pass_val) const {
-            return awaiter{this->handle, pass_val};
+        awaiter pass(PUSH* pass_ptr) const {
+            return awaiter{this->handle, pass_ptr};
         }
     };
 } // ::mvll

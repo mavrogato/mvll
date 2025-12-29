@@ -185,8 +185,9 @@ namespace mvll::inline wayland::inline client
                 //auto user_ch = user_coro();
                 for (;;) {
                     std::cout << "Begin: " << std::endl;
-                    auto ret = co_yield *(reinterpret_cast<rest_args_tuple<Member>*>(self->latest_args_raw));
-                    std::cout << *ret << std::endl;
+                    auto ret = co_yield (reinterpret_cast<rest_args_tuple<Member>*>(self->latest_args_raw));
+                    //std::cout << *ret << std::endl;
+                    std::cout << *reinterpret_cast<rest_args_tuple<Member>*>(self->latest_args_raw) << std::endl;
                 }
             };
             auto bridge_ch = bridge_coro(this, std::move(user_coro));
