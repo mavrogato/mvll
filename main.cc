@@ -179,13 +179,13 @@ namespace mvll::inline wayland::inline client
         void open_channel(Func&& user_coro) MVLL_NOEXCEPT {
             static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
             MVLL_CHECK(!this->slots[ordinal]);
-            auto bridge_coro = [](proxy* self, auto&& user_coro) MVLL_NOEXCEPT
+            auto bridge_coro = [](proxy* self, [[maybe_unused]] auto&& user_coro) MVLL_NOEXCEPT
                 ->  channel<rest_args_tuple<Member>> {
-                rest_args_tuple<Member> rest_args{};
+                [[maybe_unused]] rest_args_tuple<Member> rest_args{};
                 //auto user_ch = user_coro();
                 for (;;) {
                     std::cout << "Begin: " << std::endl;
-                    auto ret = co_yield (reinterpret_cast<rest_args_tuple<Member>*>(self->latest_args_raw));
+                    [[maybe_unused]] auto ret = co_yield (reinterpret_cast<rest_args_tuple<Member>*>(self->latest_args_raw));
                     //std::cout << *ret << std::endl;
                     std::cout << *reinterpret_cast<rest_args_tuple<Member>*>(self->latest_args_raw) << std::endl;
                 }

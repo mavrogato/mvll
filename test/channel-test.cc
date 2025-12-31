@@ -38,7 +38,7 @@ TEST_CASE("凡猫でもわかる双方向対話テスト", "[mvll][channel]") {
 
     // [Step 1] 最初の一押し（お店の暖簾をくぐるにゃ）
     // h.resume();
-    ch.resume();
+    ch.start();
 
     // 客: 「蕎麦ちょうだいにゃ！」
     // REQUIRE(*promise.pull_ptr == "蕎麦ちょうだいにゃ！");
@@ -67,7 +67,9 @@ TEST_CASE("凡猫でもわかる双方向対話テスト", "[mvll][channel]") {
     // [Final] お店を出るにゃ
     // h.resume();
     // REQUIRE(h.done());
-    ch.resume();
+    //ch.resume();
+    //REQUIRE(ch.done());
+    ch.push(nullptr);
     REQUIRE(ch.done());
 }
 
@@ -88,7 +90,7 @@ TEST_CASE("awaiterによるコルーチン間のワープテスト", "[mvll][cha
 
     auto ch_b = second_step();
     // ch_b.handle.resume(); // Bさんを待機状態にするにゃ
-    ch_b.resume();
+    ch_b.start();
 
     // 2. 最初に動く「前任」担当にゃ（Aさん）
     auto first_step = [&]([[maybe_unused]] auto target_handle) -> mvll::channel<std::string_view, int> {
@@ -110,7 +112,7 @@ TEST_CASE("awaiterによるコルーチン間のワープテスト", "[mvll][cha
     // --- 現場猫のシミュレーション開始にゃ！ ---
 
     // [Step 1] Aさんを起動
-    ch_a.resume();
+    ch_a.start();
     REQUIRE(*ch_a.pull() == "前任のAにゃ、これからBにバトンタッチするにゃ！"sv);
 
     // [Step 2] Aさんに「ワープ許可」を出すにゃ
@@ -120,8 +122,77 @@ TEST_CASE("awaiterによるコルーチン間のワープテスト", "[mvll][cha
     // [Step 3] 魔法が起きたにゃ！
     // Aを叩いたはずなのに、制御がBにワープして、Bが値を書き換えているにゃ！
     REQUIRE(*ch_b.pull() == "Bが99を受け取ったにゃ！完了にゃ！"sv);
-    
+
+    REQUIRE(ch_a.done() == true);
     REQUIRE(ch_b.handle.done() == false);
-    ch_b.resume();
+    ch_b.push(nullptr);
     REQUIRE(ch_b.handle.done() == true);
+}
+
+// 1. 普通の関数として定義（寿命問題を排除）
+mvll::channel<int, int> recursive_func(int n, int& res) {
+    if (n <= 0) { res = 0x64AD; co_return; }
+    
+    // 自分自身を関数として呼び出す（Deducing thisを使わない）
+    auto next_ch = recursive_func(n - 1, res);
+    //next_ch.start();
+    int dummy = 0;
+    co_await next_ch.pass(&dummy);
+}
+
+TEST_CASE("channelによる極限ワープ (寿命問題排除テスト)", "[mvll][channel]") {
+    int check = 0;
+    auto root_ch = recursive_func(2, check); 
+    root_ch.start();
+    REQUIRE(check == 0x64AD);
+}
+
+TEST_CASE("channelによる極限ワープ (真のStackless証明)", "[mvll][channel]") {
+    int check = 0;
+    const int depth = 1000000; // 今度こそ100万回！
+    auto root_ch = recursive_func(depth, check); 
+    root_ch.start(); // 最初のスイッチだけ押すにゃ
+    REQUIRE(check == 0x64AD);
+    REQUIRE(root_ch.done());
+}
+
+TEST_CASE("channelによる極限ワープ (Symmetric Transfer証明)", "[mvll][channel]") {
+    using namespace std::string_view_literals;
+
+    // 再帰的に「次の自分」を呼び出し続けるコルーチン
+    // self: 自分自身のチャネル
+    // n: 残りのワープ回数
+    auto recursive_warp = []<class Rec>(this Rec&& self, int n, auto& final_result) -> mvll::channel<int, int> {
+        if (n <= 0) {
+            final_result = 0x64AD; // 完了の合言葉にゃ
+            co_return;
+        }
+
+        // 次の階層のチャネルを生成するにゃ
+        auto next_ch = std::forward<Rec>(self)(n - 1, final_result);
+        //next_ch.start();
+
+        // ★ ここが運命の Symmetric Transfer にゃ！
+        // next_ch に制御を移し、自分はスタックを明け渡して眠るにゃ。
+        // これが stackless なら、100万回やってもスタックは1段分しか使わないにゃ。
+        int dummy = 0;
+        co_await next_ch.pass(&dummy);
+    };
+
+    // --- 実行開始にゃ ---
+
+    int final_check = 0;
+    const int depth = 1'000'000; // 100万階層！スタックなら確実に昇天するにゃ。
+
+    // 最初のチャネルを起動するにゃ
+    auto root_ch = recursive_warp(depth, final_check);
+    
+    // 100万階層の「ワープの連鎖」のトリガーを引くにゃ！
+    root_ch.start();
+
+    // 無事に100万人の手を渡って、最後の人が合言葉を書き込んだかチェックにゃ
+    REQUIRE(final_check == 0x64AD);
+    
+    // 全てのチャネルが done になっているはずだにゃ（final_suspendの連鎖帰還）
+    REQUIRE(root_ch.done());
 }
