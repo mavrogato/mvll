@@ -2,6 +2,8 @@
 #include "mvll/error-handling.hpp"
 #include <array>
 #include <bit>
+#include <coroutine>
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -95,9 +97,109 @@ namespace mvll::inline wayland::inline client
     template <is_proxy T>
     using unique_ptr_type = decltype (make_unique<T>(std::declval<T*>()));
 
+    template <class T>
+    auto get_awaiter(T&& t) {
+        if constexpr (requires { std::forward<T>(t).operator co_await(); }) {
+            return std::forward<T>(t).operator co_await();
+        }
+        return std::forward<T>(t);
+    }
+    struct wait_event {};
     struct fiblet_bridge {
         virtual ~fiblet_bridge() noexcept = default;
-        virtual void resume() = 0;
+        virtual void push(void const* src) const noexcept = 0;
+    };
+    template <auto Member> requires std::is_member_pointer_v<decltype (Member)>
+    struct fiblet_task : fiblet_bridge {
+        using traits = function_traits<typename member_pointer_traits<decltype (Member)>::member_type>;
+        using rest_args_tuple = typename traits::rest_args_tuple;
+        struct promise_type;
+        using handle_type = std::coroutine_handle<promise_type>;
+        handle_type handle;
+        struct promise_type {
+            rest_args_tuple const* latest = nullptr;
+            std::exception_ptr exception = nullptr;
+            std::coroutine_handle<> previous = nullptr;
+            auto get_return_object() noexcept {
+                return fiblet_task{handle_type::from_promise(*this)};
+            }
+            void unhandled_exception() {
+                this->exception = std::current_exception();
+            }
+            void return_void() const noexcept {}
+            std::suspend_never initial_suspend() const noexcept { return {}; }
+            auto final_suspend() const noexcept {
+                struct final_awaiter {
+                    bool await_ready() const noexcept { return false; }
+                    void await_resume() const noexcept {}
+                    std::coroutine_handle<> await_suspend(handle_type h) noexcept {
+                        if (auto previous = h.promise().previous) return previous;
+                        return std::noop_coroutine();
+                    }
+                };
+                return final_awaiter{};
+            }
+            struct event_awaiter {
+                promise_type& self;
+                bool await_ready() const noexcept { return false; }
+                void await_suspend(std::coroutine_handle<>) const noexcept {}
+                rest_args_tuple const& await_resume() const noexcept { return *self.latest; }
+            };
+            auto await_transform(wait_event) noexcept {
+                return event_awaiter{*this};
+            }
+            template <class Awaitable>
+            auto await_transform(Awaitable&& awaitable) noexcept {
+                auto native_awaiter = get_awaiter(std::forward<Awaitable>(awaitable));
+                struct warp_awaiter {
+                    decltype (native_awaiter) inner;
+                    std::coroutine_handle<> previous;
+                    bool await_ready() noexcept(noexcept(inner.await_ready())) {
+                        return inner.await_ready();
+                    }
+                    auto await_resume() noexcept(noexcept(inner.await_resume())) {
+                        return inner.await_resume();
+                    }
+                    auto await_suspend(std::coroutine_handle<> h) noexcept{
+                        using result_t = decltype (inner.await_suspend(h));
+                        if constexpr (std::is_void_v<result_t>) {
+                            inner.await_suspend(h);
+                            return previous ? previous : std::noop_coroutine();
+                        } else if constexpr (std::is_same_v<result_t, bool>) {
+                            if (inner.await_suspend(h)) {
+                                return previous ? previous : std::noop_coroutine();
+                            }
+                            return h;
+                        }
+                        return inner.await_suspend(h);
+                    }
+                };
+                return warp_awaiter{ std::move(native_awaiter), this->previous };
+            }
+        };
+
+    private:
+        explicit fiblet_task(handle_type h) : handle{h} {}
+        fiblet_task(fiblet_task const&) = delete;
+        fiblet_task& operator=(fiblet_task const&) = delete;
+
+    public:
+        fiblet_task& operator=(fiblet_task&& other) noexcept {
+            if (this != &other) {
+                if (handle) handle.destroy();
+                handle = std::exchange(other.handle, nullptr);
+            }
+            return *this;
+        }
+        ~fiblet_task() noexcept {
+            if (handle) {
+                handle.destroy();
+            }
+        }
+        void push(void const* update) const noexcept override {
+            handle.promise().latest = static_cast<rest_args_tuple const*>(update);
+            handle.resume();
+        }
     };
 
     template <class> class proxy;
@@ -140,8 +242,7 @@ namespace mvll::inline wayland::inline client
                             auto self = reinterpret_cast<proxy*>(data);
                             if (auto& bridge = self->slots[I]) {
                                 auto rest_args = std::tuple{rest...};
-                                self->latest_args_raw = &rest_args;
-                                bridge->resume();
+                                bridge->push(&rest_args);
                             }
                         })...
                     };
@@ -153,7 +254,6 @@ namespace mvll::inline wayland::inline client
             : ptr{make_unique(raw)}
             , listener{create_default_listener()}
             , slots{}
-            , latest_args_raw{}
             {
                 MVLL_CHECK(ptr != nullptr);
                 MVLL_CHECK(-1 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(operator T*()),
@@ -164,42 +264,29 @@ namespace mvll::inline wayland::inline client
         operator T*() const MVLL_NOEXCEPT { return this->get(); }
         listener_type<T>* operator->() const MVLL_NOEXCEPT { return this->listener.get(); }
 
-        template <auto Member>
-        struct fiblet_channel : fiblet_bridge {
-            channel<rest_args_tuple<Member>> ch;
-            fiblet_channel(channel<rest_args_tuple<Member>>&& c) : ch{std::move(c)} {}
-            void resume() override {
-                if (auto handle = ch.handle; handle && !handle.done()) {
-                    handle.resume();
-                }
-            }
-        };
 
-        template <auto Member, class Func>
-        void open_channel(Func&& user_coro) MVLL_NOEXCEPT {
+    public:
+        template <class> struct fiblet_traits;
+        template <auto Member> requires std::is_same_v<
+            typename member_pointer_traits<decltype (Member)>::class_type, listener_type<T>>
+        struct fiblet_traits<fiblet_task<Member>> {
+            static constexpr auto member = Member;
+        };
+        template <class Func>
+        static constexpr auto get_member_v = fiblet_traits<std::invoke_result_t<Func>>::member;
+
+        template <class Func>
+        void start_fiblet(Func&& user_coro) MVLL_NOEXCEPT {
+            constexpr auto Member = get_member_v<Func>;
             static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
             MVLL_CHECK(!this->slots[ordinal]);
-            auto bridge_coro = [](proxy* self, [[maybe_unused]] auto&& user_coro) MVLL_NOEXCEPT
-                ->  channel<rest_args_tuple<Member>> {
-                [[maybe_unused]] rest_args_tuple<Member> rest_args{};
-                //auto user_ch = user_coro();
-                for (;;) {
-                    std::cout << "Begin: " << std::endl;
-                    [[maybe_unused]] auto ret = co_yield (reinterpret_cast<rest_args_tuple<Member>*>(self->latest_args_raw));
-                    //std::cout << *ret << std::endl;
-                    std::cout << *reinterpret_cast<rest_args_tuple<Member>*>(self->latest_args_raw) << std::endl;
-                }
-            };
-            auto bridge_ch = bridge_coro(this, std::move(user_coro));
-            slots[ordinal].reset(new fiblet_channel<Member>{std::move(bridge_ch)});
-            slots[ordinal]->resume();
+            slots[ordinal].reset(new fiblet_task<Member>{user_coro()});
         }
 
     private:
         unique_ptr_type<T> ptr;
         std::unique_ptr<listener_type<T>> listener;
         std::array<std::unique_ptr<fiblet_bridge>, SLOT_SIZE> slots{};
-        void* latest_args_raw{};
     };
 
     template <is_proxy T>
@@ -230,7 +317,12 @@ int main() {
     auto display = proxy{wl_display_connect(nullptr)};
     auto registry = proxy{wl_display_get_registry(display)};
 
-    registry.open_channel<&wl_registry_listener::global>([]{});
+    registry.start_fiblet([] -> fiblet_task<&wl_registry_listener::global> {
+            for (;;) {
+                auto args = co_await wait_event{};
+                std::cout << args << std::endl;
+            }
+        });
     wl_display_roundtrip(display);
     return 0;
 }
