@@ -5,6 +5,7 @@
 #include <coroutine>
 #include <exception>
 #include <filesystem>
+#include <forward_list>
 #include <iostream>
 #include <memory>
 #include <tuple>
@@ -17,7 +18,6 @@
 #include <mvll/cpp2x/tuple-support.hpp>
 #include <mvll/platform/linux.hpp>
 #include <mvll/unique.hpp>
-#include <mvll/channel.hpp>
 
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
@@ -104,24 +104,24 @@ namespace mvll::inline wayland::inline client
         }
         return std::forward<T>(t);
     }
-    struct wait_event {};
+    struct wait_current_args {};
     struct fiblet_bridge {
         virtual ~fiblet_bridge() noexcept = default;
         virtual void push(void const* src) const noexcept = 0;
     };
     template <auto Member> requires std::is_member_pointer_v<decltype (Member)>
-    struct fiblet_task : fiblet_bridge {
+    struct fiblet : fiblet_bridge {
         using traits = function_traits<typename member_pointer_traits<decltype (Member)>::member_type>;
         using rest_args_tuple = typename traits::rest_args_tuple;
         struct promise_type;
         using handle_type = std::coroutine_handle<promise_type>;
         handle_type handle;
         struct promise_type {
-            rest_args_tuple const* latest = nullptr;
+            rest_args_tuple const* current;
             std::exception_ptr exception = nullptr;
             std::coroutine_handle<> previous = nullptr;
             auto get_return_object() noexcept {
-                return fiblet_task{handle_type::from_promise(*this)};
+                return fiblet{handle_type::from_promise(*this)};
             }
             void unhandled_exception() {
                 this->exception = std::current_exception();
@@ -143,9 +143,9 @@ namespace mvll::inline wayland::inline client
                 promise_type& self;
                 bool await_ready() const noexcept { return false; }
                 void await_suspend(std::coroutine_handle<>) const noexcept {}
-                rest_args_tuple const& await_resume() const noexcept { return *self.latest; }
+                rest_args_tuple const& await_resume() const noexcept { return *self.current; }
             };
-            auto await_transform(wait_event) noexcept {
+            auto await_transform(wait_current_args) noexcept {
                 return event_awaiter{*this};
             }
             template <class Awaitable>
@@ -179,25 +179,27 @@ namespace mvll::inline wayland::inline client
         };
 
     private:
-        explicit fiblet_task(handle_type h) : handle{h} {}
-        fiblet_task(fiblet_task const&) = delete;
-        fiblet_task& operator=(fiblet_task const&) = delete;
+        explicit fiblet(handle_type h) : handle{h} {}
+        fiblet(fiblet const&) = delete;
+        fiblet& operator=(fiblet const&) = delete;
 
     public:
-        fiblet_task& operator=(fiblet_task&& other) noexcept {
+        fiblet& operator=(fiblet&& other) noexcept {
             if (this != &other) {
                 if (handle) handle.destroy();
                 handle = std::exchange(other.handle, nullptr);
             }
             return *this;
         }
-        ~fiblet_task() noexcept {
+        ~fiblet() noexcept {
             if (handle) {
                 handle.destroy();
             }
         }
         void push(void const* update) const noexcept override {
-            handle.promise().latest = static_cast<rest_args_tuple const*>(update);
+            MVLL_CHECK(handle);
+            MVLL_CHECK(!handle.done());
+            handle.promise().current = static_cast<rest_args_tuple const*>(update);
             handle.resume();
         }
     };
@@ -209,7 +211,6 @@ namespace mvll::inline wayland::inline client
     public:
         proxy(wl_display* raw) MVLL_NOEXCEPT : ptr{raw, &wl_display_disconnect} {}
         wl_display* get() const MVLL_NOEXCEPT { return this->ptr.get(); }
-        operator wl_display*() const MVLL_NOEXCEPT { return this->get(); }
 
     private:
         std::unique_ptr<wl_display, std::decay_t<decltype (wl_display_disconnect)>> ptr;
@@ -219,7 +220,6 @@ namespace mvll::inline wayland::inline client
     public:
         proxy(T* raw) MVLL_NOEXCEPT : ptr{make_unique(raw)} {}
         T* get() const MVLL_NOEXCEPT { return this->ptr.get(); }
-        operator T*() const { return this->get(); }
 
     private:
         unique_ptr_type<T> ptr;
@@ -235,58 +235,71 @@ namespace mvll::inline wayland::inline client
     private:
         static constexpr std::size_t SLOT_SIZE = sizeof (listener_type<T>) / sizeof (void*);
         static constexpr auto create_default_listener() MVLL_NOEXCEPT {
-            return std::make_unique<listener_type<T>>(
-                []<size_t... I>(std::index_sequence<I...>) MVLL_NOEXCEPT {
-                    return listener_type<T> {
-                        ([]<class ...Rest>(void* data, Rest... rest) MVLL_NOEXCEPT {
-                            auto self = reinterpret_cast<proxy*>(data);
-                            if (auto& bridge = self->slots[I]) {
-                                auto rest_args = std::tuple{rest...};
-                                bridge->push(&rest_args);
-                            }
-                        })...
-                    };
-                }(std::make_index_sequence<SLOT_SIZE>()));
+            return []<size_t... I>(std::index_sequence<I...>) MVLL_NOEXCEPT {
+                return listener_type<T> {
+                    ([]<class ...Rest>(void* data, Rest... rest) MVLL_NOEXCEPT {
+                        auto const* pinned_raw = static_cast<movable_storage*>(data);
+                        MVLL_CHECK(pinned_raw);
+                        if (auto bridge = pinned_raw->slots[I].get()) {
+                            auto rest_args = std::tuple{rest...};
+                            bridge->push(&rest_args);
+                        }
+                    })...
+                };
+            }(std::make_index_sequence<SLOT_SIZE>());
         }
 
     public:
         proxy(T* raw) MVLL_NOEXCEPT
             : ptr{make_unique(raw)}
-            , listener{create_default_listener()}
-            , slots{}
+            , pin{new movable_storage{ .listener = create_default_listener(), .slots = {}}}
             {
                 MVLL_CHECK(ptr != nullptr);
-                MVLL_CHECK(-1 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(operator T*()),
-                                                       reinterpret_cast<void(**)(void)>(this->listener.get()),
-                                                       this));
+                MVLL_CHECK(pin != nullptr);
+                MVLL_CHECK(-1 != wl_proxy_add_listener(
+                    reinterpret_cast<wl_proxy*>(get()),
+                    reinterpret_cast<void(**)(void)>(&pin->listener),
+                    pin.get()));
             }
-        T* get() const { return this->ptr.get(); }
-        operator T*() const MVLL_NOEXCEPT { return this->get(); }
-        listener_type<T>* operator->() const MVLL_NOEXCEPT { return this->listener.get(); }
+        proxy(proxy&&) noexcept = default;
+        proxy& operator=(proxy&& other) noexcept = default;
+        ~proxy() noexcept = default;
+        proxy(proxy const&) = delete;
+        proxy& operator=(proxy const&) = delete;
 
+    public:
+        T* get() const { return this->ptr.get(); }
+        listener_type<T>* operator->() const MVLL_NOEXCEPT { return &pin->listener; }
+        std::uint32_t id() const noexcept {
+            return wl_proxy_get_id(reinterpret_cast<wl_proxy*>(this->get()));
+        }
 
     public:
         template <class> struct fiblet_traits;
         template <auto Member> requires std::is_same_v<
             typename member_pointer_traits<decltype (Member)>::class_type, listener_type<T>>
-        struct fiblet_traits<fiblet_task<Member>> {
+        struct fiblet_traits<fiblet<Member>> {
             static constexpr auto member = Member;
         };
         template <class Func>
         static constexpr auto get_member_v = fiblet_traits<std::invoke_result_t<Func>>::member;
 
-        template <class Func>
-        void start_fiblet(Func&& user_coro) MVLL_NOEXCEPT {
+        template <class Func, class... Args>
+        void plug(Func&& user_coro, Args&&... args) MVLL_NOEXCEPT {
             constexpr auto Member = get_member_v<Func>;
             static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
-            MVLL_CHECK(!this->slots[ordinal]);
-            slots[ordinal].reset(new fiblet_task<Member>{user_coro()});
+            MVLL_CHECK(!pin->slots[ordinal]);
+            pin->slots[ordinal].reset(new fiblet<Member>{user_coro(std::forward<Args>(args)...)});
+            MVLL_CHECK(pin->slots[ordinal]);
         }
 
     private:
         unique_ptr_type<T> ptr;
-        std::unique_ptr<listener_type<T>> listener;
-        std::array<std::unique_ptr<fiblet_bridge>, SLOT_SIZE> slots{};
+        struct movable_storage {
+            listener_type<T> listener;
+            std::array<std::unique_ptr<fiblet_bridge>, SLOT_SIZE> slots;
+        };
+        std::unique_ptr<movable_storage> pin;
     };
 
     template <is_proxy T>
@@ -307,90 +320,101 @@ namespace mvll::inline wayland::inline client
         MVLL_CHECK(0 <= ::ftruncate(fd, bypp*cx*cy));
         mvll::platform::unique_mmap<T> data{nullptr, bypp*cx*cy, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0};
         auto pool = proxy{wl_shm_create_pool(shm, fd, bypp*cx*cy)};
-        auto buffer = proxy{wl_shm_pool_create_buffer(pool, 0, cx, cy, bypp * cx, format)};
+        auto buffer = proxy{wl_shm_pool_create_buffer(pool.get(), 0, cx, cy, bypp * cx, format)};
         return std::tuple{std::move(fd), std::move(buffer), std::move(data)};
     }
 } // ::mvll
 
-int main() {
-    using namespace mvll;
-    auto display = proxy{wl_display_connect(nullptr)};
-    auto registry = proxy{wl_display_get_registry(display)};
-
-    registry.start_fiblet([] -> fiblet_task<&wl_registry_listener::global> {
-            for (;;) {
-                auto args = co_await wait_event{};
-                std::cout << args << std::endl;
-            }
-        });
-    wl_display_roundtrip(display);
-    return 0;
-}
-
-#if 0
 int main(int, char** argv) {
     using namespace mvll;
-    auto display = wrapper{wl_display_connect(nullptr)};
-    auto registry = wrapper{wl_display_get_registry(display)};
-    std::optional<wrapper<wl_compositor>> compositor;
-    std::optional<wrapper<wl_seat>> seat;
-    std::optional<wrapper<wl_shm>> shm;
-    std::optional<wrapper<xdg_wm_base>> shell;
-    registry.fiblet_start<&wl_registry_listener::global>
-        ([&](auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
-            auto const& [registry, name, interface, version] = rest_args;
+    auto display = proxy{wl_display_connect(nullptr)};
+    auto registry = proxy{wl_display_get_registry(display.get())};
+    std::optional<proxy<wl_compositor>> compositor;
+    std::forward_list<proxy<wl_seat>> seats;
+    std::optional<proxy<wl_shm>> shm;
+    std::optional<proxy<xdg_wm_base>> shell;
+    registry.plug([&] MVLL_NOEXCEPT -> fiblet<&wl_registry_listener::global> {
+        for (;;) {
+            auto const& [registry, name, interface, version] = co_await wait_current_args{};
+            if (interface_name<wl_compositor> == interface) {
+                compositor.emplace(registry_bind<wl_compositor>(registry, name, version));
+            }
+            else if (interface_name<wl_seat> == interface) {
+                seats.emplace_front(registry_bind<wl_seat>(registry, name, version));
+            }
+            else if (interface_name<wl_shm> == interface) {
+                shm.emplace(registry_bind<wl_shm>(registry, name, version));
+            }
+            else if (interface_name<xdg_wm_base> == interface) {
+                shell.emplace(registry_bind<xdg_wm_base>(registry, name, version));
+            }
+        }
+    });
+    registry.plug([&] MVLL_NOEXCEPT -> fiblet<&wl_registry_listener::global_remove> {
+        for (;;) {
+            auto const& [registry, name] = co_await wait_current_args{};
+            std::erase_if(seats, [name](auto const& s) {
+                return s.id() == name;
+            });
+        }
+    });
+    wl_display_roundtrip(display.get());
+    for (auto& seat : seats) {
+        seat.plug([&seat] MVLL_NOEXCEPT -> fiblet<&wl_seat_listener::capabilities> {
+            std::optional<proxy<wl_keyboard>> keyboard;
+            std::optional<proxy<wl_pointer>> pointer;
+            std::optional<proxy<wl_touch>> touch;
             for (;;) {
-                co_yield true;
-                if (interface_name<wl_compositor> == interface) {
-                    compositor.emplace(registry_bind<wl_compositor>(registry, name, version));
+                [[maybe_unused]] auto const& [s, caps] = co_await wait_current_args{};
+                if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
+                    keyboard.emplace(proxy{wl_seat_get_keyboard(seat.get())});
+                    keyboard->plug([] MVLL_NOEXCEPT -> fiblet<&wl_keyboard_listener::key> {
+                        for (;;) {
+                            [[maybe_unused]] auto const& args = co_await wait_current_args{};
+                            std::cout << args << std::endl;
+                        }
+                    });
                 }
-                else if (interface_name<wl_seat> == interface) {
-                    seat.emplace(registry_bind<wl_seat>(registry, name, version));
+                else {
+                    keyboard.reset();
                 }
-                else if (interface_name<wl_shm> == interface) {
-                    shm.emplace(registry_bind<wl_shm>(registry, name, version));
+                if (caps & WL_SEAT_CAPABILITY_POINTER) {
+                    pointer.emplace(proxy{wl_seat_get_pointer(seat.get())});
+                    pointer->plug([] MVLL_NOEXCEPT -> fiblet<&wl_pointer_listener::axis_value120> {
+                        for (;;) {
+                            [[maybe_unused]] auto const& args = co_await wait_current_args{};
+                            std::cout << args << std::endl;
+                        }
+                    });
                 }
-                else if (interface_name<xdg_wm_base> == interface) {
-                    shell.emplace(registry_bind<xdg_wm_base>(registry, name, version));
+                else {
+                    pointer.reset();
+                }
+                if (caps & WL_SEAT_CAPABILITY_TOUCH) {
+                    touch = proxy{wl_seat_get_touch(seat.get())};
+                    touch->plug([] MVLL_NOEXCEPT -> fiblet<&wl_touch_listener::motion> {
+                        for (;;) {
+                            [[maybe_unused]] auto const& args = co_await wait_current_args{};
+                            std::cout << args << std::endl;
+                        }
+                    });
+                }
+                else {
+                    pointer.reset();
                 }
             }
         });
-    registry.fiblet_start<&wl_registry_listener::global_remove>
-        ([&](auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
-            auto const& [registry, name] = rest_args;
-            for (;;) {
-                co_yield true;
-                if (seat.has_value() && name == wl_proxy_get_id(reinterpret_cast<wl_proxy*>(seat.value().get()))) {
-                    seat.reset();
-                }
-            }
-        });
-    wl_display_roundtrip(display);
-
-    if (seat.has_value()) {
-        wl_display_roundtrip(display);
     }
-    MVLL_CHECK(seat.has_value());
-    auto pointer = wrapper{wl_seat_get_pointer(seat.value())};
-    pointer.fiblet_start<&wl_pointer_listener::frame>
-        ([](auto&) -> generator<bool> {
-            for(;;) co_yield true;
-        });
-    pointer.fiblet_start<&wl_pointer_listener::axis_value120>
-        ([](auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
-            for (;;) {
-                co_yield true;
-                std::cout << rest_args << std::endl;
-            }
-        });
+    wl_display_roundtrip(display.get());
+
     MVLL_CHECK(compositor.has_value());
     MVLL_CHECK(shm.has_value());
     MVLL_CHECK(shell.has_value());
     shell.value()->ping = [](auto, auto shell, auto serial) noexcept {
         xdg_wm_base_pong(shell, serial);
     };
-    auto surface = wrapper{wl_compositor_create_surface(compositor.value())};
-    auto xsurface = wrapper{xdg_wm_base_get_xdg_surface(shell.value(), surface)};
+    auto surface = proxy{wl_compositor_create_surface(compositor.value().get())};
+    auto xsurface = proxy{xdg_wm_base_get_xdg_surface(shell.value().get(), surface.get())};
     xsurface->configure = [](auto, auto xsurface, auto serial) noexcept {
         xdg_surface_ack_configure(xsurface, serial);
     };
@@ -398,41 +422,35 @@ int main(int, char** argv) {
     std::size_t scale = 1;
     std::size_t cx = 640 * scale;
     std::size_t cy = 480 * scale;
-    auto [fd, buffer, pixels] = shm_allocate_buffer(shm.value(), cx, cy);
-    auto toplevel = wrapper{xdg_surface_get_toplevel(xsurface)};
-    xdg_toplevel_set_app_id(toplevel, std::filesystem::path(argv[0]).filename().c_str());
-    toplevel.fiblet_start<&xdg_toplevel_listener::configure>
-        ([&](auto& rest_args) MVLL_NOEXCEPT-> generator<bool> {
-            auto const& [toplevel, h, w, states] = rest_args;
-            for (;;) {
-                co_yield true;
-                cx = h * scale;
-                cy = w * scale;
-                if (cx * cy > 0) {
-                    std::tie(fd, buffer, pixels) = shm_allocate_buffer(shm.value(), cx, cy);
-                }
+    auto [fd, buffer, pixels] = shm_allocate_buffer(shm.value().get(), cx, cy);
+    auto toplevel = proxy{xdg_surface_get_toplevel(xsurface.get())};
+    xdg_toplevel_set_app_id(toplevel.get(), std::filesystem::path(argv[0]).filename().c_str());
+    toplevel.plug([&] MVLL_NOEXCEPT -> fiblet<&xdg_toplevel_listener::configure> {
+        for (;;) {
+            auto const& [toplevel, h, w, states] = co_await wait_current_args{};
+            cx = h * scale;
+            cy = w * scale;
+            if (cx * cy > 0) {
+                std::tie(fd, buffer, pixels) = shm_allocate_buffer(shm.value().get(), cx, cy);
             }
-        });
+        }
+    });
     bool quit = false;
-    toplevel.fiblet_start<&xdg_toplevel_listener::close>
-        ([&]([[maybe_unused]] auto& rest_args) MVLL_NOEXCEPT -> generator<bool> {
-            co_yield true;
-            quit = true;
-            co_return;
-        });
+    toplevel.plug([&] MVLL_NOEXCEPT -> fiblet<&xdg_toplevel_listener::close> {
+        co_await wait_current_args{};
+        quit = true;
+    });
 
     // auto que = sycl::queue();
     // std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
 
-    wl_surface_commit(surface);
-    while (-1 != wl_display_dispatch(display)) {
+    wl_surface_commit(surface.get());
+    while (-1 != wl_display_dispatch(display.get())) {
         if (quit) break;
-        wl_surface_damage(surface, 0, 0, cx, cy);
-        wl_surface_attach(surface, buffer, 0, 0);
-        wl_surface_commit(surface);
-        wl_display_flush(display);
+        wl_surface_damage(surface.get(), 0, 0, cx, cy);
+        wl_surface_attach(surface.get(), buffer.get(), 0, 0);
+        wl_surface_commit(surface.get());
+        wl_display_flush(display.get());
     }
-
     return 0;
 }
-#endif
