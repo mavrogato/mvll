@@ -73,6 +73,7 @@ namespace mvll::inline wayland::inline client
     INTERN_CLIENT_PROXY_CONCEPT(wl_keyboard,           wl_keyboard_listener)
     INTERN_CLIENT_PROXY_CONCEPT(wl_pointer,            wl_pointer_listener)
     INTERN_CLIENT_PROXY_CONCEPT(wl_touch,              wl_touch_listener)
+    INTERN_CLIENT_PROXY_CONCEPT(wl_callback,           wl_callback_listener)
     INTERN_CLIENT_PROXY_CONCEPT(xdg_wm_base,           xdg_wm_base_listener)
     INTERN_CLIENT_PROXY_CONCEPT(xdg_surface,           xdg_surface_listener)
     INTERN_CLIENT_PROXY_CONCEPT(xdg_toplevel,          xdg_toplevel_listener)
@@ -148,6 +149,20 @@ namespace mvll::inline wayland::inline client
             auto await_transform(wait_current_args) noexcept {
                 return event_awaiter{*this};
             }
+            // auto await_transform(auto&& rec) requires std::is_invocable_v<decltype (rec)> {
+            //     auto next = rec();
+            //     auto h = next.handle;
+            //     next.handle = next.handle.promise().previous;
+            //     struct recursive_awaiter {
+            //         std::coroutine_handle<> next_handle;
+            //         bool await_ready() const noexcept { return false; }
+            //         void await_resume() const noexcept {}
+            //         std::coroutine_handle<> await_suspend(handle_type h) noexcept {
+            //             return next_handle; //!!!
+            //         }
+            //     };
+            //     return recursive_awaiter{h};
+            // }
             template <class Awaitable>
             auto await_transform(Awaitable&& awaitable) noexcept {
                 auto native_awaiter = get_awaiter(std::forward<Awaitable>(awaitable));
@@ -257,7 +272,7 @@ namespace mvll::inline wayland::inline client
                 MVLL_CHECK(ptr != nullptr);
                 MVLL_CHECK(pin != nullptr);
                 MVLL_CHECK(-1 != wl_proxy_add_listener(
-                    reinterpret_cast<wl_proxy*>(get()),
+                    reinterpret_cast<wl_proxy*>(this->get()),
                     reinterpret_cast<void(**)(void)>(&pin->listener),
                     pin.get()));
             }
@@ -309,20 +324,21 @@ namespace mvll::inline wayland::inline client
 
     template <class T = std::uint32_t, wl_shm_format format = WL_SHM_FORMAT_XRGB8888, size_t bypp = 4>
     [[nodiscard]] inline auto shm_allocate_buffer(wl_shm* shm, size_t cx, size_t cy) MVLL_NOEXCEPT {
-        std::string_view xdg_runtime_dir = std::getenv("XDG_RUNTIME_DIR");
-        MVLL_CHECK(!xdg_runtime_dir.empty());
-        MVLL_CHECK(std::filesystem::exists(xdg_runtime_dir));
-        std::string tmp_path(xdg_runtime_dir);
-        tmp_path += "/weston-shared-XXXXXX";
-        mvll::platform::unique_fd fd{::mkostemp(tmp_path.data(), O_CLOEXEC)};
-        MVLL_CHECK(fd);
-        MVLL_CHECK(0 <= ::unlink(tmp_path.c_str()));
+        mvll::platform::unique_fd fd{::memfd_create("mvll-shm", MFD_CLOEXEC)};
         MVLL_CHECK(0 <= ::ftruncate(fd, bypp*cx*cy));
         mvll::platform::unique_mmap<T> data{nullptr, bypp*cx*cy, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0};
         auto pool = proxy{wl_shm_create_pool(shm, fd, bypp*cx*cy)};
         auto buffer = proxy{wl_shm_pool_create_buffer(pool.get(), 0, cx, cy, bypp * cx, format)};
         return std::tuple{std::move(fd), std::move(buffer), std::move(data)};
     }
+
+    inline auto lamed(auto&& closure) noexcept {
+        static auto cache = closure;
+        return [](auto... args) {
+            return cache(args...);
+        };
+    }
+
 } // ::mvll
 
 int main(int, char** argv) {
@@ -380,7 +396,7 @@ int main(int, char** argv) {
                 }
                 if (caps & WL_SEAT_CAPABILITY_POINTER) {
                     pointer.emplace(proxy{wl_seat_get_pointer(seat.get())});
-                    pointer->plug([] MVLL_NOEXCEPT -> fiblet<&wl_pointer_listener::axis_value120> {
+                    pointer->plug([]  MVLL_NOEXCEPT -> fiblet<&wl_pointer_listener::axis_value120> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
                             std::cout << args << std::endl;
@@ -427,11 +443,19 @@ int main(int, char** argv) {
     xdg_toplevel_set_app_id(toplevel.get(), std::filesystem::path(argv[0]).filename().c_str());
     toplevel.plug([&] MVLL_NOEXCEPT -> fiblet<&xdg_toplevel_listener::configure> {
         for (;;) {
-            auto const& [toplevel, h, w, states] = co_await wait_current_args{};
+            auto const& args = co_await wait_current_args{};
+            std::cout << "toplevel.configure: " << args << std::endl;
+            auto const& [toplevel, h, w, states] = args;
             cx = h * scale;
             cy = w * scale;
             if (cx * cy > 0) {
                 std::tie(fd, buffer, pixels) = shm_allocate_buffer(shm.value().get(), cx, cy);
+                buffer.plug([] MVLL_NOEXCEPT -> fiblet<&wl_buffer_listener::release> {
+                    for (;;) {
+                        auto const& args = co_await wait_current_args{};
+                        std::cout << "buffer.release: " << args << std::endl;
+                    }
+                });
             }
         }
     });
@@ -441,16 +465,36 @@ int main(int, char** argv) {
         quit = true;
     });
 
-    // auto que = sycl::queue();
-    // std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
+    auto que = sycl::queue();
+    std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
+    auto callback = proxy{wl_surface_frame(surface.get())};
+    callback.plug([&] MVLL_NOEXCEPT -> fiblet<&wl_callback_listener::done> {
+        for (;;) {
+            auto const& args = co_await wait_current_args{};
+            std::cout << "outer: " << args << std::endl;
+            wl_surface_attach(surface.get(), buffer.get(), 0, 0);
+            wl_surface_damage(surface.get(), 0, 0, cx, cy);
+            wl_surface_commit(surface.get());
+            auto ret = wl_display_flush(display.get());
+            std::cout << ret << std::endl;
+            auto callback = proxy{wl_surface_frame(surface.get())};
+            callback.plug([&] MVLL_NOEXCEPT -> fiblet<&wl_callback_listener::done> {
+                std::cout << "inner ready" << std::endl;
+                co_await wait_current_args{};
+                std::cout << "inner: " << args << std::endl;
+                wl_surface_attach(surface.get(), buffer.get(), 0, 0);
+                wl_surface_damage(surface.get(), 0, 0, cx, cy);
+                wl_surface_commit(surface.get());
+                wl_display_flush(display.get());
+            });
+        }
+    });
 
+    wl_surface_attach(surface.get(), buffer.get(), 0, 0);
+    wl_surface_damage(surface.get(), 0, 0, cx, cy);
     wl_surface_commit(surface.get());
     while (-1 != wl_display_dispatch(display.get())) {
         if (quit) break;
-        wl_surface_damage(surface.get(), 0, 0, cx, cy);
-        wl_surface_attach(surface.get(), buffer.get(), 0, 0);
-        wl_surface_commit(surface.get());
-        wl_display_flush(display.get());
     }
     return 0;
 }
