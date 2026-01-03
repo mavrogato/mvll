@@ -6,6 +6,7 @@
 #include <exception>
 #include <filesystem>
 #include <forward_list>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <tuple>
@@ -25,6 +26,330 @@
 
 #include <xdg-shell-client.h>
 #include <zwp-tablet-v2-client.h>
+
+namespace mvll::inline algebra
+{
+    // Default ULP tolerance for floating point comparisons
+    template <class T>
+    struct default_ulp_tolerance {
+        static constexpr size_t value = 4;
+    };
+
+    // Get the underlying integer representation of a floating point number
+    template <std::floating_point T>
+    constexpr auto backing_int(T s) noexcept {
+        if constexpr (std::is_same_v<T, float>) {
+            return std::bit_cast<int32_t>(s);
+        }
+        else if constexpr (std::is_same_v<T, double>) {
+            return std::bit_cast<int64_t>(s);
+        }
+        else if constexpr (std::is_same_v<T, long double>) {
+            if constexpr (sizeof(long double) == sizeof(uint64_t)) {
+                return std::bit_cast<int64_t>(s);
+            }
+            static_assert(sizeof (T) == 0, "Unsupported long double size");
+        }
+    }
+
+    // Compare two floating point numbers for almost equality within a given ULP tolerance
+    template <std::floating_point T, size_t ULP_TORLERANCE = default_ulp_tolerance<T>::value>
+    constexpr bool almost_equal(T x, T y) noexcept {
+        if (std::isinf(x) || std::isinf(y)) {
+            return x == y; // both must be the same infinity
+        }
+        if (std::isnan(x) || std::isnan(y)) {
+            return false; // Nans are always unequal
+        }
+        if (std::signbit(x) != std::signbit(y)) {
+            return x == y; // handle +0.0 and -0.0 as equal
+        }
+
+        // Get the integer representation of the floating point numbers
+        auto xx = backing_int(x);
+        auto yy = backing_int(y);
+        using Int = decltype (xx);
+        using Uint = std::make_unsigned_t<Int>;
+
+        // Make lexicographical ordering of negative numbers work
+        if (xx < 0) xx = std::rotr(Uint(1), 1) - xx;
+        if (yy < 0) yy = std::rotr(Uint(1), 1) - yy;
+
+        Uint delta = (xx > yy) ? (xx - yy) : (yy - xx); // We want the constant std::abs...
+
+        return delta <= ULP_TORLERANCE;
+    }
+
+    template <class T, size_t N>
+    struct versor : versor<T, N-1> {
+    public:
+        using base_type = versor<T, N-1>;
+        using value_type = typename base_type::value_type;
+        using iterator = typename base_type::iterator;
+        using const_iterator = typename base_type::const_iterator;
+        using reference = typename base_type::reference;
+        using const_reference = typename base_type::const_reference;
+
+        template <size_t NN> requires (NN <= N) using sub_type = versor<T, NN>;
+
+    public:
+        constexpr friend size_t size(versor) noexcept { return N; }
+        constexpr size_t size() const noexcept { return N; }
+        static constexpr size_t total_extent = N;
+
+    public:
+        value_type last;
+
+    public:
+        constexpr versor(versor const&) = default;
+        constexpr versor(versor&&) = default;
+        constexpr versor& operator=(versor const&) = default;
+        constexpr versor& operator=(versor&&) = default;
+
+    public:
+        constexpr versor(auto... args) noexcept
+            : versor{std::array<T, N>{static_cast<T>(args)...}, std::make_index_sequence<N-1>()}
+        {
+            static_assert(sizeof... (args) <= N);
+        }
+
+    private:
+        constexpr static auto array_at(const std::array<T, N>& arr, size_t i) noexcept {
+            return (i < arr.size()) ? arr[i] : T();
+        }
+
+        template <size_t... I>
+        constexpr versor(std::array<T, N>&& args_array, std::index_sequence<I...>) noexcept
+            : base_type{array_at(args_array, I)...}, last{array_at(args_array, N-1)}
+        {
+        }
+
+    public:
+        template <size_t I>
+        constexpr auto get() const noexcept {
+            static_assert(I < N);
+            // We use 'I + 1 == N || N == 1' to handle two cases:
+            // 1. We've reached the target index 'last' in the current derived class.
+            // 2. We are in the base case N == 1, where 'last' is the only element,
+            //    avoiding a call to get() on the empty versor<T, 0> base.
+            if constexpr (I + 1 == N || N == 1)
+                return this->last;
+            else
+                return base_type::template get<I>();
+        }
+        template <size_t I>
+        constexpr auto& get() noexcept {
+            static_assert(I < N);
+            // See the comments in the const version of get<I>() for the rationale behind this condition.
+            if constexpr (I + 1 == N || N == 1)
+                return this->last;
+            else
+                return base_type::template get<I>();
+        }
+        template <size_t I>
+        constexpr friend auto get(versor const& v) noexcept { return v.get<I>(); }
+        template <size_t I>
+        constexpr friend auto& get(versor& v) noexcept { return v.get<I>(); }
+
+    public:
+        constexpr auto begin() const noexcept { return &static_cast<versor<T, 1> const*>(this)->last; }
+        constexpr auto begin() noexcept { return &static_cast<versor<T, 1>*>(this)->last; }
+        constexpr auto end() const noexcept { return &this->last + 1; }
+        constexpr auto end() noexcept { return &this->last + 1; }
+
+        constexpr auto front() const noexcept { return *(this->begin()); }
+        constexpr auto& front() noexcept { return *(this->begin()); }
+        constexpr auto back() const noexcept { return this->last; }
+        constexpr auto& back() noexcept { return this->last; }
+
+        constexpr auto& operator[](size_t i) noexcept { return *(begin() + i); }
+        constexpr auto operator[](size_t i) const noexcept { return *(begin() + i); }
+
+        auto& at(size_t i) {
+            if (this->size() <= i)
+                throw std::range_error("versor index");
+            return (*this)[i];
+        }
+        auto at(size_t i) const {
+            if (this->size() <= i)
+                throw std::range_error("versor index");
+            return (*this)[i];
+        }
+
+    public:
+        template <class Func, class... Rest>
+        constexpr auto& apply(Func&& func, Rest&&... rest) noexcept {
+            // Determine the minimum extent among all the versors
+            constexpr auto NN = std::min({versor::total_extent, (std::decay_t<Rest>::total_extent)...});
+            // Common type for the first NN elements
+            using common_type = sub_type<NN>;
+            // Apply the function to the all last elements
+            common_type::last = func(common_type::last, static_cast<common_type const&>(rest).last...);
+
+            if (NN > 1) {
+                // Recurse into the common base type
+                using recursive_type = common_type::base_type;
+                if constexpr ((std::is_rvalue_reference_v<Rest> && ...)) {
+                    recursive_type::apply(std::forward<Func>(func), std::move(static_cast<recursive_type&>(rest))...);
+                }
+                else {
+                    recursive_type::apply(std::forward<Func>(func), static_cast<recursive_type const&>(rest)...);
+                }
+            }
+            return *this;
+        }
+
+        constexpr auto& negate() noexcept { return apply(std::negate<T>()); }
+        constexpr auto& lognot() noexcept { return apply(std::bit_not<T>()); }
+
+    public:
+        constexpr auto operator+() const noexcept { return *this; }
+        constexpr auto operator-() const noexcept { return (+(*this)).negate(); }
+
+        // Arithmetic complex assignments (simple vectorized operations)
+        constexpr auto& operator+=(auto&& rhs) noexcept {
+            return apply(std::plus<T>(), std::forward<decltype (rhs)>(rhs));
+        }
+        constexpr auto& operator-=(auto&& rhs) noexcept {
+            return apply(std::minus<T>(), std::forward<decltype (rhs)>(rhs));
+        }
+        constexpr auto& operator*=(auto&& rhs) noexcept {
+            return apply(std::multiplies<T>(), std::forward<decltype (rhs)>(rhs));
+        }
+        constexpr auto& operator/=(auto&& rhs) noexcept {
+            return apply(std::divides<T>(), std::forward<decltype (rhs)>(rhs));
+        }
+
+        // Binary arithmetics (returning new instance)
+        constexpr auto operator+(auto&& rhs) const noexcept {
+            return (+(*this)) += std::forward<decltype (rhs)>(rhs);
+        }
+        constexpr auto operator-(auto&& rhs) const noexcept {
+            return (+(*this)) -= std::forward<decltype (rhs)>(rhs); }
+        constexpr auto operator*(auto&& rhs) const noexcept {
+            return (+(*this)) *= std::forward<decltype (rhs)>(rhs);
+        }
+        constexpr auto operator/(auto&& rhs) const noexcept {
+            return (+(*this)) /= std::forward<decltype (rhs)>(rhs);
+        }
+
+        // Scalar multiplication/division
+        constexpr auto& operator*=(value_type s) noexcept {
+            return apply([s](value_type x) noexcept {
+                return x * s;
+            });
+        }
+        constexpr auto& operator/=(value_type s) noexcept { return (*this) *= (1/s); }
+        constexpr auto operator*(value_type s) const noexcept { return (+(*this)) *= s; }
+        constexpr auto operator/(value_type s) noexcept { return (+(*this)) /= s; }
+        constexpr friend auto operator*(value_type s, versor v) noexcept { return v * s; }
+
+        // Bitwise unary operation
+        constexpr auto operator~() const noexcept { return (+(*this)).lognot(); }
+
+        // Bitwise complex assignments (simple vectorized operations)
+        constexpr auto& operator^=(auto&& rhs) noexcept {
+            return apply(std::bit_xor<T>(), std::forward<decltype (rhs)>(rhs));
+        }
+        constexpr auto& operator|=(auto&& rhs) noexcept {
+            return apply(std::bit_or<T>(), std::forward<decltype (rhs)>(rhs));
+        }
+        constexpr auto& operator&=(auto&& rhs) noexcept {
+            return apply(std::bit_and<T>(), std::forward<decltype (rhs)>(rhs));
+        }
+
+        // Bitwise binary operations (returning new instance)
+        constexpr auto operator^(auto&& rhs) const noexcept {
+            return (+(*this)) ^= std::forward<decltype (rhs)>(rhs);
+        }
+        constexpr auto operator|(auto&& rhs) const noexcept {
+            return (+(*this)) |= std::forward<decltype (rhs)>(rhs);
+        }
+        constexpr auto operator&(auto&& rhs) const noexcept {
+            return (+(*this)) &= std::forward<decltype (rhs)>(rhs);
+        }
+
+    public:
+        constexpr bool operator==(versor const& rhs) const noexcept {
+            if constexpr (std::floating_point<T>) {
+                return almost_equal(this->last, rhs.last) &&
+                    base_type::operator==(static_cast<base_type const&>(rhs));
+            }
+            else {
+                return this->last == rhs.last &&
+                    base_type::operator==(static_cast<base_type const&>(rhs));
+            }
+        }
+    };
+
+    template <class T>
+    struct versor<T, 0> {
+    public:
+        using value_type = T;
+        using iterator = value_type*;
+        using const_iterator = value_type const*;
+        using reference = value_type&;
+        using const_reference = value_type const&;
+        using size_type = size_t;
+
+    public:
+        constexpr friend size_t size(versor) noexcept { return 0; }
+        constexpr size_t size() const noexcept { return 0; }
+
+        constexpr bool operator==(versor&&) const noexcept { return true; }
+        constexpr bool operator==(versor const&) const noexcept { return true; }
+
+    protected:
+        constexpr auto& apply(auto&&...) noexcept { return *this; }
+        constexpr friend T inner(versor, versor) noexcept { return T(); }
+    };
+
+    template <class T, size_t N>
+    constexpr auto inner(versor<T, N> lhs, versor<T, N> rhs) noexcept {
+        return lhs.back() * rhs.back() + inner(static_cast<versor<T, N-1> const&>(lhs),
+                                               static_cast<versor<T, N-1> const&>(rhs));
+    }
+
+    template <class T>
+    constexpr auto cross(versor<T, 3> lhs, versor<T, 3> rhs) noexcept {
+        return versor<T, 3>{
+            lhs[1] * rhs[2] - lhs[2] * rhs[1],
+            lhs[2] * rhs[0] - lhs[0] * rhs[2],
+            lhs[0] * rhs[1] - lhs[1] * rhs[0],
+        };
+    }
+
+    using vec2s = versor<short,  2>;
+    using vec2i = versor<int,    2>;
+    using vec2f = versor<float,  2>;
+    using vec2d = versor<double, 2>;
+    using vec3s = versor<short,  3>;
+    using vec3i = versor<int,    3>;
+    using vec3f = versor<float,  3>;
+    using vec3d = versor<double, 3>;
+    using vec4s = versor<short,  4>;
+    using vec4i = versor<int,    4>;
+    using vec4f = versor<float,  4>;
+    using vec4d = versor<double, 4>;
+
+    using color = versor<uint8_t, 4>;
+} // ::mvll::algebra
+
+// tuple support
+namespace std
+{
+    template <class T, size_t N>
+    struct tuple_size<mvll::versor<T, N>> {
+        static constexpr auto value = N;
+    };
+    template <class T, size_t N>
+    constexpr size_t tuple_size_v<mvll::versor<T, N>> = tuple_size<mvll::versor<T, N>>::value;
+
+    template <size_t I, class T, size_t N>
+    struct tuple_element<I, mvll::versor<T, N>> {
+        using type = T;
+    };
+} // ::std
 
 namespace mvll::inline wayland::inline client
 {
@@ -149,48 +474,6 @@ namespace mvll::inline wayland::inline client
             auto await_transform(wait_current_args) noexcept {
                 return event_awaiter{*this};
             }
-            // auto await_transform(auto&& rec) requires std::is_invocable_v<decltype (rec)> {
-            //     auto next = rec();
-            //     auto h = next.handle;
-            //     next.handle = next.handle.promise().previous;
-            //     struct recursive_awaiter {
-            //         std::coroutine_handle<> next_handle;
-            //         bool await_ready() const noexcept { return false; }
-            //         void await_resume() const noexcept {}
-            //         std::coroutine_handle<> await_suspend(handle_type h) noexcept {
-            //             return next_handle; //!!!
-            //         }
-            //     };
-            //     return recursive_awaiter{h};
-            // }
-            template <class Awaitable>
-            auto await_transform(Awaitable&& awaitable) noexcept {
-                auto native_awaiter = get_awaiter(std::forward<Awaitable>(awaitable));
-                struct warp_awaiter {
-                    decltype (native_awaiter) inner;
-                    std::coroutine_handle<> previous;
-                    bool await_ready() noexcept(noexcept(inner.await_ready())) {
-                        return inner.await_ready();
-                    }
-                    auto await_resume() noexcept(noexcept(inner.await_resume())) {
-                        return inner.await_resume();
-                    }
-                    auto await_suspend(std::coroutine_handle<> h) noexcept{
-                        using result_t = decltype (inner.await_suspend(h));
-                        if constexpr (std::is_void_v<result_t>) {
-                            inner.await_suspend(h);
-                            return previous ? previous : std::noop_coroutine();
-                        } else if constexpr (std::is_same_v<result_t, bool>) {
-                            if (inner.await_suspend(h)) {
-                                return previous ? previous : std::noop_coroutine();
-                            }
-                            return h;
-                        }
-                        return inner.await_suspend(h);
-                    }
-                };
-                return warp_awaiter{ std::move(native_awaiter), this->previous };
-            }
         };
 
     private:
@@ -300,12 +583,15 @@ namespace mvll::inline wayland::inline client
         static constexpr auto get_member_v = fiblet_traits<std::invoke_result_t<Func>>::member;
 
         template <class Func, class... Args>
-        void plug(Func&& user_coro, Args&&... args) MVLL_NOEXCEPT {
+        void attach(Func&& user_coro, Args&&... args) MVLL_NOEXCEPT {
             constexpr auto Member = get_member_v<Func>;
             static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
             MVLL_CHECK(!pin->slots[ordinal]);
             pin->slots[ordinal].reset(new fiblet<Member>{user_coro(std::forward<Args>(args)...)});
             MVLL_CHECK(pin->slots[ordinal]);
+        }
+        template <class Func, class...Args>
+        void attach(std::move_only_function<void (Args...)>&& func, Args&&... args) MVLL_NOEXCEPT {
         }
 
     private:
@@ -322,7 +608,7 @@ namespace mvll::inline wayland::inline client
         return proxy{static_cast<T*>(::wl_registry_bind(registry, name, interface_ptr<T>, version))};
     }
 
-    template <class T = std::uint32_t, wl_shm_format format = WL_SHM_FORMAT_XRGB8888, size_t bypp = 4>
+    template <class T = color, wl_shm_format format = WL_SHM_FORMAT_XRGB8888, size_t bypp = sizeof (color)>
     [[nodiscard]] inline auto shm_allocate_buffer(wl_shm* shm, size_t cx, size_t cy) MVLL_NOEXCEPT {
         mvll::platform::unique_fd fd{::memfd_create("mvll-shm", MFD_CLOEXEC)};
         MVLL_CHECK(0 <= ::ftruncate(fd, bypp*cx*cy));
@@ -333,12 +619,11 @@ namespace mvll::inline wayland::inline client
     }
 
     inline auto lamed(auto&& closure) noexcept {
-        static auto cache = closure;
+        static auto cache = std::move(closure);
         return [](auto... args) {
             return cache(args...);
         };
     }
-
 } // ::mvll
 
 int main(int, char** argv) {
@@ -349,34 +634,35 @@ int main(int, char** argv) {
     std::forward_list<proxy<wl_seat>> seats;
     std::optional<proxy<wl_shm>> shm;
     std::optional<proxy<xdg_wm_base>> shell;
-    registry.plug([&] MVLL_NOEXCEPT -> fiblet<&wl_registry_listener::global> {
-        for (;;) {
-            auto const& [registry, name, interface, version] = co_await wait_current_args{};
-            if (interface_name<wl_compositor> == interface) {
-                compositor.emplace(registry_bind<wl_compositor>(registry, name, version));
-            }
-            else if (interface_name<wl_seat> == interface) {
-                seats.emplace_front(registry_bind<wl_seat>(registry, name, version));
-            }
-            else if (interface_name<wl_shm> == interface) {
-                shm.emplace(registry_bind<wl_shm>(registry, name, version));
-            }
-            else if (interface_name<xdg_wm_base> == interface) {
-                shell.emplace(registry_bind<xdg_wm_base>(registry, name, version));
-            }
+    registry->global = lamed([&](auto, auto... rest) MVLL_NOEXCEPT {
+        auto args = std::tuple{rest...};
+        auto const& [registry, name, interface, version] = args;
+        if (interface_name<wl_compositor> == interface) {
+            std::cout << "compositor: " << args << std::endl;
+            compositor.emplace(registry_bind<wl_compositor>(registry, name, version));
+        }
+        else if (interface_name<wl_seat> == interface) {
+            std::cout << "seat: " << args << std::endl;
+            seats.emplace_front(registry_bind<wl_seat>(registry, name, version));
+        }
+        else if (interface_name<wl_shm> == interface) {
+            std::cout << "shm: " << args << std::endl;
+            shm.emplace(registry_bind<wl_shm>(registry, name, version));
+        }
+        else if (interface_name<xdg_wm_base> == interface) {
+            std::cout << "shell: " << args << std::endl;
+            shell.emplace(registry_bind<xdg_wm_base>(registry, name, version));
         }
     });
-    registry.plug([&] MVLL_NOEXCEPT -> fiblet<&wl_registry_listener::global_remove> {
-        for (;;) {
-            auto const& [registry, name] = co_await wait_current_args{};
-            std::erase_if(seats, [name](auto const& s) {
-                return s.id() == name;
-            });
-        }
+    registry->global_remove = lamed([&](auto, auto... args)  MVLL_NOEXCEPT {
+        auto const& [registry, name] = std::tuple{args...};
+        std::erase_if(seats, [name](auto const& s) {
+            return s.id() == name;
+        });
     });
     wl_display_roundtrip(display.get());
     for (auto& seat : seats) {
-        seat.plug([&seat] MVLL_NOEXCEPT -> fiblet<&wl_seat_listener::capabilities> {
+        seat.attach([&seat] MVLL_NOEXCEPT -> fiblet<&wl_seat_listener::capabilities> {
             std::optional<proxy<wl_keyboard>> keyboard;
             std::optional<proxy<wl_pointer>> pointer;
             std::optional<proxy<wl_touch>> touch;
@@ -384,10 +670,22 @@ int main(int, char** argv) {
                 [[maybe_unused]] auto const& [s, caps] = co_await wait_current_args{};
                 if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
                     keyboard.emplace(proxy{wl_seat_get_keyboard(seat.get())});
-                    keyboard->plug([] MVLL_NOEXCEPT -> fiblet<&wl_keyboard_listener::key> {
+                    keyboard->attach([] MVLL_NOEXCEPT -> fiblet<&wl_keyboard_listener::key> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
-                            std::cout << args << std::endl;
+                            std::cout << "key: " << args << std::endl;
+                        }
+                    });
+                    keyboard->attach([] MVLL_NOEXCEPT -> fiblet<&wl_keyboard_listener::modifiers> {
+                        for (;;) {
+                            [[maybe_unused]] auto const& args = co_await wait_current_args{};
+                            std::cout << "key mod: " << args << std::endl;
+                        }
+                    });
+                    keyboard->attach([] MVLL_NOEXCEPT -> fiblet<&wl_keyboard_listener::repeat_info> {
+                        for (;;) {
+                            [[maybe_unused]] auto const& args = co_await wait_current_args{};
+                            std::cout << "key repeat: " << args << std::endl;
                         }
                     });
                 }
@@ -396,10 +694,10 @@ int main(int, char** argv) {
                 }
                 if (caps & WL_SEAT_CAPABILITY_POINTER) {
                     pointer.emplace(proxy{wl_seat_get_pointer(seat.get())});
-                    pointer->plug([]  MVLL_NOEXCEPT -> fiblet<&wl_pointer_listener::axis_value120> {
+                    pointer->attach([]  MVLL_NOEXCEPT -> fiblet<&wl_pointer_listener::axis_value120> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
-                            std::cout << args << std::endl;
+                            std::cout << "axis120: " << args << std::endl;
                         }
                     });
                 }
@@ -408,15 +706,15 @@ int main(int, char** argv) {
                 }
                 if (caps & WL_SEAT_CAPABILITY_TOUCH) {
                     touch = proxy{wl_seat_get_touch(seat.get())};
-                    touch->plug([] MVLL_NOEXCEPT -> fiblet<&wl_touch_listener::motion> {
+                    touch->attach([] MVLL_NOEXCEPT -> fiblet<&wl_touch_listener::motion> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
-                            std::cout << args << std::endl;
+                            std::cout << "touch.motion: " << args << std::endl;
                         }
                     });
                 }
                 else {
-                    pointer.reset();
+                    touch.reset();
                 }
             }
         });
@@ -435,13 +733,17 @@ int main(int, char** argv) {
         xdg_surface_ack_configure(xsurface, serial);
     };
 
-    std::size_t scale = 1;
-    std::size_t cx = 640 * scale;
-    std::size_t cy = 480 * scale;
-    auto [fd, buffer, pixels] = shm_allocate_buffer(shm.value().get(), cx, cy);
     auto toplevel = proxy{xdg_surface_get_toplevel(xsurface.get())};
-    xdg_toplevel_set_app_id(toplevel.get(), std::filesystem::path(argv[0]).filename().c_str());
-    toplevel.plug([&] MVLL_NOEXCEPT -> fiblet<&xdg_toplevel_listener::configure> {
+    toplevel.attach([&] MVLL_NOEXCEPT -> fiblet<&xdg_toplevel_listener::configure> {
+        std::size_t scale = 1;
+        std::size_t cx = 640 * scale;
+        std::size_t cy = 480 * scale;
+        auto primary = shm_allocate_buffer(shm.value().get(), cx, cy);
+        auto secondary = shm_allocate_buffer(shm.value().get(), cx, cy);
+        auto& [fd, buffer, pixels] = primary;
+        auto frame = proxy{wl_surface_frame(surface.get())}; 
+        auto que = sycl::queue();
+        std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
         for (;;) {
             auto const& args = co_await wait_current_args{};
             std::cout << "toplevel.configure: " << args << std::endl;
@@ -449,39 +751,20 @@ int main(int, char** argv) {
             cx = h * scale;
             cy = w * scale;
             if (cx * cy > 0) {
-                std::tie(fd, buffer, pixels) = shm_allocate_buffer(shm.value().get(), cx, cy);
-                buffer.plug([] MVLL_NOEXCEPT -> fiblet<&wl_buffer_listener::release> {
-                    for (;;) {
-                        auto const& args = co_await wait_current_args{};
-                        std::cout << "buffer.release: " << args << std::endl;
-                    }
-                });
+                secondary = shm_allocate_buffer(shm.value().get(), cx, cy);
             }
-        }
-    });
-    bool quit = false;
-    toplevel.plug([&] MVLL_NOEXCEPT -> fiblet<&xdg_toplevel_listener::close> {
-        co_await wait_current_args{};
-        quit = true;
-    });
-
-    auto que = sycl::queue();
-    std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
-    auto callback = proxy{wl_surface_frame(surface.get())};
-    callback.plug([&] MVLL_NOEXCEPT -> fiblet<&wl_callback_listener::done> {
-        for (;;) {
-            auto const& args = co_await wait_current_args{};
-            std::cout << "outer: " << args << std::endl;
-            wl_surface_attach(surface.get(), buffer.get(), 0, 0);
-            wl_surface_damage(surface.get(), 0, 0, cx, cy);
-            wl_surface_commit(surface.get());
-            auto ret = wl_display_flush(display.get());
-            std::cout << ret << std::endl;
-            auto callback = proxy{wl_surface_frame(surface.get())};
-            callback.plug([&] MVLL_NOEXCEPT -> fiblet<&wl_callback_listener::done> {
-                std::cout << "inner ready" << std::endl;
-                co_await wait_current_args{};
-                std::cout << "inner: " << args << std::endl;
+            else { // the initial configuration
+                wl_surface_attach(surface.get(), buffer.get(), 0, 0);
+                wl_surface_damage(surface.get(), 0, 0, cx, cy);
+                wl_surface_commit(surface.get());
+            }
+            buffer->release = lamed([&](...) {
+                std::swap(primary, secondary);
+            });
+            frame->done = lamed([&](...) MVLL_NOEXCEPT {
+                auto next = proxy{wl_surface_frame(surface.get())};
+                next->done = frame->done;
+                frame = std::move(next);
                 wl_surface_attach(surface.get(), buffer.get(), 0, 0);
                 wl_surface_damage(surface.get(), 0, 0, cx, cy);
                 wl_surface_commit(surface.get());
@@ -489,9 +772,12 @@ int main(int, char** argv) {
             });
         }
     });
+    bool quit = false;
+    toplevel->close = lamed([&](...) MVLL_NOEXCEPT {
+        quit = true;
+    });
+    xdg_toplevel_set_app_id(toplevel.get(), std::filesystem::path(argv[0]).filename().c_str());
 
-    wl_surface_attach(surface.get(), buffer.get(), 0, 0);
-    wl_surface_damage(surface.get(), 0, 0, cx, cy);
     wl_surface_commit(surface.get());
     while (-1 != wl_display_dispatch(display.get())) {
         if (quit) break;
