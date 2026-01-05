@@ -353,32 +353,39 @@ namespace std
 
 namespace mvll::inline wayland::inline client
 {
-    template <class T> struct member_pointer_traits;
-    template <class R, class T>
-    struct member_pointer_traits<R T::*> {
-        using class_pointer_type = T;
-        using class_type = std::remove_pointer_t<T>;
-        using member_type = R;
-    };
-
-    template <class T> struct function_traits;
-    template <class R, class... Args>
-    struct function_traits<R (*)(Args...)> {
-        using return_type = R;
-        static constexpr std::size_t arity = sizeof...(Args);
-        using args_tuple = std::tuple<Args...>;
-        template <std::size_t N> using arg_t = std::tuple_element_t<N, args_tuple>;
-    };
-    template <class... Rest>
-    struct function_traits<void (*)(void*, Rest...)> {
-        using return_type = void;
-        static constexpr std::size_t rest_arity = sizeof...(Rest);
-        static constexpr std::size_t arity = 1 + rest_arity;
-        using rest_args_tuple = std::tuple<Rest...>;
-        using args_tuple = std::tuple<void*, Rest...>;
-        template <std::size_t N> using rest_arg_t = std::tuple_element_t<N, rest_args_tuple>;
-        template <std::size_t N> using arg_t = std::tuple_element_t<N, args_tuple>;
-    };
+    namespace internals
+    {
+        template <class T> struct member_pointer_traits;
+        template <class R, class T>
+        struct member_pointer_traits<R T::*> {
+            using class_pointer_type = T;
+            using class_type = std::remove_pointer_t<T>;
+            using member_type = R;
+        };
+        template <class T> struct listener_callback_traits;
+        template <class... Rest>
+        struct listener_callback_traits<void (*)(void*, Rest...)> {
+            using return_type = void;
+            static constexpr std::size_t rest_arity = sizeof...(Rest);
+            static constexpr std::size_t arity = 1 + rest_arity;
+            using rest_args_tuple = std::tuple<Rest...>;
+            using args_tuple = std::tuple<void*, Rest...>;
+            using action = std::function<void (rest_args_tuple const&)>;
+            template <std::size_t N> using rest_arg_t = std::tuple_element_t<N, rest_args_tuple>;
+            template <std::size_t N> using arg_t = std::tuple_element_t<N, args_tuple>;
+        };
+    }
+    template <auto Member> requires std::is_member_pointer_v<decltype (Member)>
+    using listener_member_pointer_traits = internals::member_pointer_traits<decltype (Member)>;
+    template <auto Member>
+    using listener_callback_class = typename listener_member_pointer_traits<Member>::class_type;
+    template <auto Member>
+    using listener_callback_traits = internals::listener_callback_traits<
+        typename listener_member_pointer_traits<Member>::member_type>;
+    template <auto Member>
+    using listener_callback_rest_args_tuple = typename listener_callback_traits<Member>::rest_args_tuple;
+    template <auto Member>
+    using listener_callback_action = typename listener_callback_traits<Member>::action;
 
     template <class> constexpr wl_interface const *const interface_ptr = nullptr;
     template <class T> concept is_proxy = (interface_ptr<T> != nullptr);
@@ -387,6 +394,7 @@ namespace mvll::inline wayland::inline client
 #define INTERN_CLIENT_PROXY_CONCEPT(CLIENT, LISTENER)                             \
     template <> constexpr wl_interface const *const interface_ptr<CLIENT> = &CLIENT##_interface; \
     template <> struct listener_type_holder<CLIENT> { using type = LISTENER; };
+    INTERN_CLIENT_PROXY_CONCEPT(wl_display,            std::monostate)
     INTERN_CLIENT_PROXY_CONCEPT(wl_registry,           wl_registry_listener)
     INTERN_CLIENT_PROXY_CONCEPT(wl_compositor,         std::monostate)
     INTERN_CLIENT_PROXY_CONCEPT(wl_output,             wl_output_listener)
@@ -415,6 +423,11 @@ namespace mvll::inline wayland::inline client
         MVLL_CHECK(raw);
         wl_proxy_destroy(reinterpret_cast<wl_proxy*>(raw));
     }
+    template <>
+    void proxy_deleter<wl_display>(wl_display* raw) noexcept {
+        MVLL_CHECK(raw);
+        wl_display_disconnect(raw);
+    }
     template <is_proxy T>
     auto make_unique(T* raw) MVLL_NOEXCEPT {
         MVLL_CHECK(raw);
@@ -423,22 +436,33 @@ namespace mvll::inline wayland::inline client
     template <is_proxy T>
     using unique_ptr_type = decltype (make_unique<T>(std::declval<T*>()));
 
-    template <class T>
-    auto get_awaiter(T&& t) {
-        if constexpr (requires { std::forward<T>(t).operator co_await(); }) {
-            return std::forward<T>(t).operator co_await();
+    namespace internals
+    {
+        template <class T>
+        auto get_awaiter(T&& t) {
+            if constexpr (requires { std::forward<T>(t).operator co_await(); }) {
+                return std::forward<T>(t).operator co_await();
+            }
+            return std::forward<T>(t);
         }
-        return std::forward<T>(t);
     }
     struct wait_current_args {};
-    struct fiblet_bridge {
-        virtual ~fiblet_bridge() noexcept = default;
-        virtual void push(void const* src) const noexcept = 0;
+    struct listener_marshaller {
+        virtual ~listener_marshaller() noexcept = default;
+        virtual void push(void const* src) = 0;
     };
-    template <auto Member> requires std::is_member_pointer_v<decltype (Member)>
-    struct fiblet : fiblet_bridge {
-        using traits = function_traits<typename member_pointer_traits<decltype (Member)>::member_type>;
-        using rest_args_tuple = typename traits::rest_args_tuple;
+    template <auto Member>
+    struct action : listener_marshaller {
+        listener_callback_action<Member> func;
+        action(listener_callback_action<Member> func) : func{func} {}
+        virtual void push(void const* src) override {
+            auto const& rest_args = *static_cast<listener_callback_rest_args_tuple<Member> const*>(src);
+            this->func(rest_args);
+        }
+    };
+    template <auto Member>
+    struct fiblet : listener_marshaller {
+        using rest_args_tuple = listener_callback_rest_args_tuple<Member>;
         struct promise_type;
         using handle_type = std::coroutine_handle<promise_type>;
         handle_type handle;
@@ -494,7 +518,7 @@ namespace mvll::inline wayland::inline client
                 handle.destroy();
             }
         }
-        void push(void const* update) const noexcept override {
+        void push(void const* update) override {
             MVLL_CHECK(handle);
             MVLL_CHECK(!handle.done());
             handle.promise().current = static_cast<rest_args_tuple const*>(update);
@@ -502,41 +526,54 @@ namespace mvll::inline wayland::inline client
         }
     };
 
+    namespace internals
+    {
+        template <class T>
+        class proxy_impl {
+        public:
+            static constexpr auto interface_ptr = mvll::interface_ptr<T>;
+            static constexpr std::string_view interface_name = mvll::interface_name<T>;
+
+        public:
+            proxy_impl(T* raw) : ptr{make_unique(raw)} {}
+
+        protected:
+            void reset(T* raw) {
+                MVLL_CHECK(raw);
+                MVLL_CHECK(raw != ptr.get());
+                return this->ptr.reset(raw);
+            }
+
+        public:
+            T* get() const noexcept { return this->ptr.get(); }
+            std::uint32_t id() const noexcept {
+                return wl_proxy_get_id(reinterpret_cast<wl_proxy*>(this->get()));
+            }
+            std::string_view name() const noexcept {
+                return interface_name;
+            }
+
+        private:
+            unique_ptr_type<T> ptr;
+        };
+    }
+
     template <class> class proxy;
     template <class T> proxy(T*) -> proxy<T>;
-    template <>
-    class proxy<wl_display> {
-    public:
-        proxy(wl_display* raw) MVLL_NOEXCEPT : ptr{raw, &wl_display_disconnect} {}
-        wl_display* get() const MVLL_NOEXCEPT { return this->ptr.get(); }
-
-    private:
-        std::unique_ptr<wl_display, std::decay_t<decltype (wl_display_disconnect)>> ptr;
-    };
     template <is_proxy T>
-    class proxy<T> {
+    class proxy<T> : public internals::proxy_impl<T> {
     public:
-        proxy(T* raw) MVLL_NOEXCEPT : ptr{make_unique(raw)} {}
-        T* get() const MVLL_NOEXCEPT { return this->ptr.get(); }
-
-    private:
-        unique_ptr_type<T> ptr;
+        using internals::proxy_impl<T>::proxy_impl;
     };
     template <is_proxy_observable T>
-    class proxy<T> {
-    public:
-        template <auto Member> requires std::is_same_v<
-            typename member_pointer_traits<decltype (Member)>::class_type, listener_type<T>>
-        using rest_args_tuple = typename function_traits<
-            typename member_pointer_traits<decltype (Member)>::member_type>::rest_args_tuple;
-
+    class proxy<T> : public internals::proxy_impl<T> {
     private:
         static constexpr std::size_t SLOT_SIZE = sizeof (listener_type<T>) / sizeof (void*);
         static constexpr auto create_default_listener() MVLL_NOEXCEPT {
             return []<size_t... I>(std::index_sequence<I...>) MVLL_NOEXCEPT {
                 return listener_type<T> {
-                    ([]<class ...Rest>(void* data, Rest... rest) MVLL_NOEXCEPT {
-                        auto const* pinned_raw = static_cast<movable_storage*>(data);
+                    ([]<class ...Rest>(void* data, Rest... rest) {
+                        auto const* pinned_raw = static_cast<storage*>(data);
                         MVLL_CHECK(pinned_raw);
                         if (auto bridge = pinned_raw->slots[I].get()) {
                             auto rest_args = std::tuple{rest...};
@@ -548,11 +585,10 @@ namespace mvll::inline wayland::inline client
         }
 
     public:
-        proxy(T* raw) MVLL_NOEXCEPT
-            : ptr{make_unique(raw)}
-            , pin{new movable_storage{ .listener = create_default_listener(), .slots = {}}}
+        proxy(T* raw)
+            : internals::proxy_impl<T>::proxy_impl{raw}
+            , pin{new storage{ .listener = create_default_listener(), .slots = {}}}
             {
-                MVLL_CHECK(ptr != nullptr);
                 MVLL_CHECK(pin != nullptr);
                 MVLL_CHECK(-1 != wl_proxy_add_listener(
                     reinterpret_cast<wl_proxy*>(this->get()),
@@ -566,41 +602,44 @@ namespace mvll::inline wayland::inline client
         proxy& operator=(proxy const&) = delete;
 
     public:
-        T* get() const { return this->ptr.get(); }
         listener_type<T>* operator->() const MVLL_NOEXCEPT { return &pin->listener; }
-        std::uint32_t id() const noexcept {
-            return wl_proxy_get_id(reinterpret_cast<wl_proxy*>(this->get()));
+        void rebind(T* raw) {
+            this->reset(raw);
+            MVLL_CHECK(-1 != wl_proxy_add_listener(
+                reinterpret_cast<wl_proxy*>(this->get()),
+                reinterpret_cast<void(**)(void)>(&pin->listener),
+                pin.get()));
         }
 
     public:
         template <class> struct fiblet_traits;
-        template <auto Member> requires std::is_same_v<
-            typename member_pointer_traits<decltype (Member)>::class_type, listener_type<T>>
+        template <auto Member> requires std::is_same_v<listener_type<T>,
+                                                       listener_callback_class<Member>>
         struct fiblet_traits<fiblet<Member>> {
             static constexpr auto member = Member;
         };
         template <class Func>
         static constexpr auto get_member_v = fiblet_traits<std::invoke_result_t<Func>>::member;
-
-        template <class Func, class... Args>
-        void attach(Func&& user_coro, Args&&... args) MVLL_NOEXCEPT {
+        template <class Func, class... InitialArgs>
+        void attach(Func&& coro, InitialArgs&&... init) {
             constexpr auto Member = get_member_v<Func>;
             static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
-            MVLL_CHECK(!pin->slots[ordinal]);
-            pin->slots[ordinal].reset(new fiblet<Member>{user_coro(std::forward<Args>(args)...)});
+            pin->slots[ordinal].reset(new fiblet<Member>{coro(std::forward<InitialArgs>(init)...)});
             MVLL_CHECK(pin->slots[ordinal]);
         }
-        template <class Func, class...Args>
-        void attach(std::move_only_function<void (Args...)>&& func, Args&&... args) MVLL_NOEXCEPT {
+        template <auto Member>
+        void attach(listener_callback_action<Member> func) {
+            static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
+            pin->slots[ordinal].reset(new action<Member>{func});
+            MVLL_CHECK(pin->slots[ordinal]);
         }
 
     private:
-        unique_ptr_type<T> ptr;
-        struct movable_storage {
+        struct storage {
             listener_type<T> listener;
-            std::array<std::unique_ptr<fiblet_bridge>, SLOT_SIZE> slots;
+            std::array<std::unique_ptr<listener_marshaller>, SLOT_SIZE> slots;
         };
-        std::unique_ptr<movable_storage> pin;
+        std::unique_ptr<storage> pin;
     };
 
     template <is_proxy T>
@@ -618,12 +657,6 @@ namespace mvll::inline wayland::inline client
         return std::tuple{std::move(fd), std::move(buffer), std::move(data)};
     }
 
-    inline auto lamed(auto&& closure) noexcept {
-        static auto cache = std::move(closure);
-        return [](auto... args) {
-            return cache(args...);
-        };
-    }
 } // ::mvll
 
 int main(int, char** argv) {
@@ -634,28 +667,23 @@ int main(int, char** argv) {
     std::forward_list<proxy<wl_seat>> seats;
     std::optional<proxy<wl_shm>> shm;
     std::optional<proxy<xdg_wm_base>> shell;
-    registry->global = lamed([&](auto, auto... rest) MVLL_NOEXCEPT {
-        auto args = std::tuple{rest...};
+    registry.attach<&wl_registry_listener::global>([&](auto const& args) {
         auto const& [registry, name, interface, version] = args;
         if (interface_name<wl_compositor> == interface) {
-            std::cout << "compositor: " << args << std::endl;
             compositor.emplace(registry_bind<wl_compositor>(registry, name, version));
         }
         else if (interface_name<wl_seat> == interface) {
-            std::cout << "seat: " << args << std::endl;
             seats.emplace_front(registry_bind<wl_seat>(registry, name, version));
         }
         else if (interface_name<wl_shm> == interface) {
-            std::cout << "shm: " << args << std::endl;
             shm.emplace(registry_bind<wl_shm>(registry, name, version));
         }
         else if (interface_name<xdg_wm_base> == interface) {
-            std::cout << "shell: " << args << std::endl;
             shell.emplace(registry_bind<xdg_wm_base>(registry, name, version));
         }
     });
-    registry->global_remove = lamed([&](auto, auto... args)  MVLL_NOEXCEPT {
-        auto const& [registry, name] = std::tuple{args...};
+    registry.attach<&wl_registry_listener::global_remove>([&](auto const& args) noexcept {
+        auto const& [registry, name] = args;
         std::erase_if(seats, [name](auto const& s) {
             return s.id() == name;
         });
@@ -740,10 +768,16 @@ int main(int, char** argv) {
         std::size_t cy = 480 * scale;
         auto primary = shm_allocate_buffer(shm.value().get(), cx, cy);
         auto secondary = shm_allocate_buffer(shm.value().get(), cx, cy);
-        auto& [fd, buffer, pixels] = primary;
+        auto release_callback = [&primary, &secondary](auto const& ) {
+            std::swap(primary, secondary);
+        };
+        auto& primary_buffer = std::get<1>(primary);
+        auto& secondary_buffer = std::get<1>(secondary);
+        primary_buffer.attach<&wl_buffer_listener::release>(release_callback);
+        secondary_buffer.attach<&wl_buffer_listener::release>(release_callback);
         auto frame = proxy{wl_surface_frame(surface.get())}; 
-        auto que = sycl::queue();
-        std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
+        // auto que = sycl::queue();
+        // std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
         for (;;) {
             auto const& args = co_await wait_current_args{};
             std::cout << "toplevel.configure: " << args << std::endl;
@@ -751,21 +785,18 @@ int main(int, char** argv) {
             cx = h * scale;
             cy = w * scale;
             if (cx * cy > 0) {
+                primary = shm_allocate_buffer(shm.value().get(), cx, cy);
                 secondary = shm_allocate_buffer(shm.value().get(), cx, cy);
+                primary_buffer.attach<&wl_buffer_listener::release>(release_callback);
+                secondary_buffer.attach<&wl_buffer_listener::release>(release_callback);
             }
             else { // the initial configuration
-                wl_surface_attach(surface.get(), buffer.get(), 0, 0);
-                wl_surface_damage(surface.get(), 0, 0, cx, cy);
+                wl_surface_attach(surface.get(), primary_buffer.get(), 0, 0);
                 wl_surface_commit(surface.get());
             }
-            buffer->release = lamed([&](...) {
-                std::swap(primary, secondary);
-            });
-            frame->done = lamed([&](...) MVLL_NOEXCEPT {
-                auto next = proxy{wl_surface_frame(surface.get())};
-                next->done = frame->done;
-                frame = std::move(next);
-                wl_surface_attach(surface.get(), buffer.get(), 0, 0);
+            frame.attach<&wl_callback_listener::done>([&](auto const&) {
+                frame.rebind(wl_surface_frame(surface.get()));
+                wl_surface_attach(surface.get(), primary_buffer.get(), 0, 0);
                 wl_surface_damage(surface.get(), 0, 0, cx, cy);
                 wl_surface_commit(surface.get());
                 wl_display_flush(display.get());
@@ -773,7 +804,7 @@ int main(int, char** argv) {
         }
     });
     bool quit = false;
-    toplevel->close = lamed([&](...) MVLL_NOEXCEPT {
+    toplevel.attach<&xdg_toplevel_listener::close>([&](auto const&) MVLL_NOEXCEPT {
         quit = true;
     });
     xdg_toplevel_set_app_id(toplevel.get(), std::filesystem::path(argv[0]).filename().c_str());
