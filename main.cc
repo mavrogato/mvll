@@ -29,37 +29,6 @@
 
 namespace mvll::inline wayland::inline client
 {
-    namespace internals
-    {
-        template <class T> struct member_pointer_traits;
-        template <class R, class T>
-        struct member_pointer_traits<R T::*> {
-            using class_pointer_type = T;
-            using class_type = std::remove_pointer_t<T>;
-            using member_type = R;
-        };
-        template <class T> struct listener_callback_traits;
-        template <class... Rest>
-        struct listener_callback_traits<void (*)(void*, Rest...)> {
-            using return_type = void;
-            static constexpr std::size_t rest_arity = sizeof...(Rest);
-            static constexpr std::size_t arity = 1 + rest_arity;
-            using rest_args_tuple = std::tuple<Rest...>;
-            using args_tuple = std::tuple<void*, Rest...>;
-            template <std::size_t N> using rest_arg_t = std::tuple_element_t<N, rest_args_tuple>;
-            template <std::size_t N> using arg_t = std::tuple_element_t<N, args_tuple>;
-        };
-    }
-    template <auto Member> requires std::is_member_pointer_v<decltype (Member)>
-    using listener_member_pointer_traits = internals::member_pointer_traits<decltype (Member)>;
-    template <auto Member>
-    using listener_callback_class = typename listener_member_pointer_traits<Member>::class_type;
-    template <auto Member>
-    using listener_callback_traits = internals::listener_callback_traits<
-        typename listener_member_pointer_traits<Member>::member_type>;
-    template <auto Member>
-    using listener_callback_rest_args_tuple = typename listener_callback_traits<Member>::rest_args_tuple;
-
     template <class> constexpr wl_interface const *const interface_ptr = nullptr;
     template <class T> concept is_proxy = (interface_ptr<T> != nullptr);
     template <is_proxy T> std::string_view interface_name = interface_ptr<T>->name;
@@ -90,6 +59,37 @@ namespace mvll::inline wayland::inline client
     template <is_proxy T> using listener_type = listener_type_holder<T>::type;
     template <class T>
     concept is_proxy_observable = is_proxy<T> && !std::is_same_v<std::monostate, listener_type<T>>;
+
+    namespace internals
+    {
+        template <class T> struct member_pointer_traits;
+        template <class R, class T>
+        struct member_pointer_traits<R T::*> {
+            using class_pointer_type = T;
+            using class_type = std::remove_pointer_t<T>;
+            using member_type = R;
+        };
+        template <class T> struct listener_callback_traits;
+        template <class... Rest>
+        struct listener_callback_traits<void (*)(void*, Rest...)> {
+            using return_type = void;
+            static constexpr std::size_t rest_arity = sizeof...(Rest);
+            static constexpr std::size_t arity = 1 + rest_arity;
+            using rest_args_tuple = std::tuple<Rest...>;
+            using args_tuple = std::tuple<void*, Rest...>;
+            template <std::size_t N> using rest_arg_t = std::tuple_element_t<N, rest_args_tuple>;
+            template <std::size_t N> using arg_t = std::tuple_element_t<N, args_tuple>;
+        };
+    }
+    template <auto Member> requires (std::is_member_pointer_v<decltype (Member)>)
+    using listener_member_pointer_traits = internals::member_pointer_traits<decltype (Member)>;
+    template <auto Member>
+    using listener_callback_class = typename listener_member_pointer_traits<Member>::class_type;
+    template <auto Member>
+    using listener_callback_traits = internals::listener_callback_traits<
+        typename listener_member_pointer_traits<Member>::member_type>;
+    template <auto Member>
+    using listener_callback_rest_args_tuple = typename listener_callback_traits<Member>::rest_args_tuple;
 
     template <is_proxy T>
     void proxy_deleter(T* raw) noexcept {
@@ -248,6 +248,61 @@ namespace mvll::inline wayland::inline client
         T* ptr_;
     };
 
+    template <is_proxy_observable T>
+    class thunk_table final {
+    public:
+        static constexpr std::size_t SIZE = sizeof (listener_type<T>) / sizeof (void*);
+        using table_type = std::array<listener_thunk*, SIZE>;
+
+    public:
+        static auto listener = []<std::size_t ...I>(std::index_sequence<I...>) noexcept {
+            return listener_type<T> {
+                ([]<class ...Rest>(void* data, Rest... rest) MVLL_NOEXCEPT {
+                    if (auto const* self = static_cast<thunk_table*>(data)) {
+                        if (auto thunk = self->table[I]) {
+                            auto rest_args = std::tuple{rest...};
+                            thunk->push(&rest_args);
+                        }
+                    }
+                })...
+            };
+        }(std::make_index_sequence<SIZE>());
+
+    public:
+        thunk_table() : table_{new table_type{}} {}
+        ~thunk_table() noexcept { reset(); }
+        thunk_table(thunk_table&& other) noexcept : table_{std::exchange(other.table_, nullptr)} {}
+
+        thunk_table& operator=(thunk_table&& other) noexcept {
+            reset(std::forward(other.table_, nullptr));
+            return *this;
+        }
+        thunk_table(thunk_table const&) = delete;
+        thunk_table& operator=(thunk_table const&) = delete;
+
+    public:
+        std::int32_t start(T* target) MVLL_NOEXCEPT {
+            MVLL_CHECK(this->table_);
+            return wl_proxy_add_listener(
+                target,
+                reinterpret_cast<void(**)(void)>(&listener),
+                this);
+        }
+
+        // template <auto Member> //!!!
+        // void 
+
+    private:
+        void reset(thunk_table* raw = nullptr) noexcept {
+            if (auto old = std::exchange(table_, raw); old && old != raw) {
+                for (auto& thunk : old) delete std::exchange(thunk, nullptr);
+            }
+        }
+
+    private:
+        table_type table_;
+    };
+
     template <class> class proxy;
     template <class T> proxy(T*) -> proxy<T>;
     template <is_proxy T>
@@ -258,9 +313,9 @@ namespace mvll::inline wayland::inline client
     template <is_proxy_observable T>
     class proxy<T> : public proxy_impl<T> {
     private:
-        static constexpr std::size_t THUNK_ARRAY_SIZE = sizeof (listener_type<T>) / sizeof (void*);
+        static constexpr std::size_t THUNK_TABLE_SIZE = sizeof (listener_type<T>) / sizeof (void*);
         struct storage {
-            std::array<std::unique_ptr<listener_thunk>, THUNK_ARRAY_SIZE> slots;
+            std::array<std::unique_ptr<listener_thunk>, THUNK_TABLE_SIZE> slots;
         };
         static inline auto listener = []<size_t... I>(std::index_sequence<I...>) noexcept {
             return listener_type<T> {
@@ -273,7 +328,7 @@ namespace mvll::inline wayland::inline client
                     }
                 })...
             };
-        }(std::make_index_sequence<THUNK_ARRAY_SIZE>());
+        }(std::make_index_sequence<THUNK_TABLE_SIZE>());
 
     public:
         proxy()
@@ -305,7 +360,8 @@ namespace mvll::inline wayland::inline client
         proxy& operator=(proxy const&) = delete;
 
     public:
-        void rebind(T* raw) {
+        void rebind(T* raw) MVLL_NOEXCEPT {
+            MVLL_CHECK(raw != this->get());
             this->reset(raw);
             MVLL_CHECK(-1 != wl_proxy_add_listener(
                 reinterpret_cast<wl_proxy*>(this->get()),
@@ -403,19 +459,19 @@ int main(int, char** argv) {
                     if (!keyboard) {
                         keyboard = proxy{wl_seat_get_keyboard(seat)};
                     }
-                    keyboard.on([] MVLL_NOEXCEPT -> fiblet<&wl_keyboard_listener::key> {
+                    keyboard.on([] -> fiblet<&wl_keyboard_listener::key> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
                             std::cout << "key: " << args << std::endl;
                         }
                     });
-                    keyboard.on([] MVLL_NOEXCEPT -> fiblet<&wl_keyboard_listener::modifiers> {
+                    keyboard.on([] -> fiblet<&wl_keyboard_listener::modifiers> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
                             std::cout << "key mod: " << args << std::endl;
                         }
                     });
-                    keyboard.on([] MVLL_NOEXCEPT -> fiblet<&wl_keyboard_listener::repeat_info> {
+                    keyboard.on([] -> fiblet<&wl_keyboard_listener::repeat_info> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
                             std::cout << "key repeat: " << args << std::endl;
@@ -429,7 +485,7 @@ int main(int, char** argv) {
                     if (!pointer) {
                         pointer = proxy{wl_seat_get_pointer(seat)};
                     }
-                    pointer.on([]  MVLL_NOEXCEPT -> fiblet<&wl_pointer_listener::axis_value120> {
+                    pointer.on([] -> fiblet<&wl_pointer_listener::axis_value120> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
                             std::cout << "axis120: " << args << std::endl;
@@ -443,7 +499,7 @@ int main(int, char** argv) {
                     if (!touch) {
                         touch = proxy{wl_seat_get_touch(seat)};
                     }
-                    touch.on([] MVLL_NOEXCEPT -> fiblet<&wl_touch_listener::motion> {
+                    touch.on([] -> fiblet<&wl_touch_listener::motion> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
                             std::cout << "touch.motion: " << args << std::endl;
@@ -489,7 +545,6 @@ int main(int, char** argv) {
         // std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
         for (;;) {
             auto const& args = co_await wait_current_args{};
-            std::cout << "toplevel.configure: " << args << std::endl;
             auto const& [toplevel, h, w, states] = args;
             cx = h * scale;
             cy = w * scale;
@@ -503,7 +558,7 @@ int main(int, char** argv) {
                 wl_surface_attach(surface, primary_buffer, 0, 0);
                 wl_surface_commit(surface);
             }
-            frame.on<&wl_callback_listener::done>([&](wl_callback*, std::uint32_t) {
+            frame.on<&wl_callback_listener::done>([&](wl_callback*, std::uint32_t) MVLL_NOEXCEPT {
                 frame.rebind(wl_surface_frame(surface));
                 wl_surface_attach(surface, primary_buffer, 0, 0);
                 wl_surface_damage(surface, 0, 0, cx, cy);
