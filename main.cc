@@ -111,11 +111,50 @@ namespace mvll::inline wayland::inline client
             }
             return std::forward<T>(t);
         }
-    }
+
+        template <class T, void DELETER(T*) = nullptr>
+        class move_only_pointer {
+            constexpr move_only_pointer(T const&) = delete;
+            constexpr move_only_pointer& operator=(T const&) = delete;
+            static void deleter(T* raw) noexcept {
+                if constexpr (DELETER) {
+                    DELETER(raw);
+                }
+                else {
+                    delete raw; // delete[] not supported!
+                }
+            }
+
+        public:
+            constexpr move_only_pointer(T* raw = nullptr) noexcept : ptr_{raw} {}
+            constexpr move_only_pointer(move_only_pointer&& other) noexcept
+                : ptr_{std::exchange(other.ptr_, nullptr)}
+                {}
+            constexpr move_only_pointer& operator=(move_only_pointer&& other) noexcept {
+                reset(std::exchange(other.ptr_, nullptr));
+                return *this;
+            }
+            constexpr void reset(T* raw = nullptr) noexcept {
+                if (auto old = std::exchange(this->ptr_, raw)) {
+                    if (old != this->ptr_) {
+                        deleter(old);
+                    }
+                }
+            }
+            constexpr ~move_only_pointer() noexcept { reset(); }
+            constexpr auto operator<=>(move_only_pointer const&) const noexcept = default;
+            constexpr T* get() const noexcept { return this->ptr_; }
+            constexpr operator T*() const noexcept { return this->get(); }
+            constexpr explicit operator bool() const noexcept { return this->get() != nullptr; }
+
+        private:
+            T* ptr_;
+        };
+    } // ::inernals
     struct wait_current_args {};
     struct listener_thunk {
         virtual ~listener_thunk() noexcept = default;
-        virtual void push(void const* src) = 0;
+        virtual void push(void const* src) const = 0;
         listener_thunk() = default;
         listener_thunk(listener_thunk const&) = delete;
         listener_thunk& operator=(listener_thunk const&) = delete;
@@ -124,7 +163,7 @@ namespace mvll::inline wayland::inline client
     struct action final : listener_thunk {
         Func func;
         action(Func&& func) : func{std::forward<Func>(func)} {}
-        virtual void push(void const* src) override {
+        virtual void push(void const* src) const override {
             using rest_args_tuple = listener_callback_rest_args_tuple<Member>;
             auto const& rest_args = *static_cast<rest_args_tuple const*>(src);
             if constexpr (requires {this->func(rest_args);}) {
@@ -191,7 +230,7 @@ namespace mvll::inline wayland::inline client
                 handle.destroy();
             }
         }
-        void push(void const* update) override {
+        void push(void const* update) const override {
             MVLL_CHECK(handle);
             MVLL_CHECK(!handle.done());
             handle.promise().current = static_cast<rest_args_tuple const*>(update);
@@ -199,30 +238,17 @@ namespace mvll::inline wayland::inline client
         }
     };
 
-    template <class T>
-    class proxy_impl {
+    template <is_proxy T>
+    class proxy_impl : public internals::move_only_pointer<T, proxy_deleter<T>> {
     public:
+        using base_type = internals::move_only_pointer<T, proxy_deleter<T>>;
         static constexpr auto interface_ptr = mvll::interface_ptr<T>;
         static inline std::string_view interface_name = mvll::interface_name<T>;
 
     public:
-        proxy_impl(T* src = nullptr) : ptr_{src} {}
-        proxy_impl(proxy_impl&& other) noexcept : ptr_{std::exchange(other.ptr_, nullptr)} {}
-        proxy_impl& operator=(proxy_impl&& other) noexcept {
-            reset(std::exchange(other.ptr_, nullptr));
-            return *this;
-        }
-        virtual ~proxy_impl() noexcept {
-            reset();
-        }
-        proxy_impl(proxy_impl const&) = delete;
-        proxy_impl& operator=(proxy_impl const&) = delete;
+        using base_type::base_type;
 
     public:
-        T* get() const noexcept { return this->ptr_; }
-        operator T*() const noexcept { return this->get(); }
-        explicit operator bool() const noexcept { return this->get() != nullptr; }
-
         std::uint32_t id() const noexcept {
             return wl_proxy_get_id(reinterpret_cast<wl_proxy*>(this->get()));
         }
@@ -236,30 +262,20 @@ namespace mvll::inline wayland::inline client
                                                                 proxy_impl const& x) {
             return output << std::tuple{x.name(), x.id(), x.get()};
         }
-
-    protected:
-        void reset(T* raw = nullptr) {
-            if (T* old = std::exchange(ptr_, raw); old && old != raw) {
-                proxy_deleter(old);
-            }
-        }
-
-    private:
-        T* ptr_;
     };
 
     template <is_proxy_observable T>
     class thunk_table final {
     public:
         static constexpr std::size_t SIZE = sizeof (listener_type<T>) / sizeof (void*);
-        using table_type = std::array<listener_thunk*, SIZE>;
+        using table_type = std::array<internals::move_only_pointer<listener_thunk>, SIZE>;
 
-    public:
+    private:
         static auto listener = []<std::size_t ...I>(std::index_sequence<I...>) noexcept {
             return listener_type<T> {
-                ([]<class ...Rest>(void* data, Rest... rest) MVLL_NOEXCEPT {
-                    if (auto const* self = static_cast<thunk_table*>(data)) {
-                        if (auto thunk = self->table[I]) {
+                ([]<class ...Rest>(void* data, Rest... rest) {
+                    if (table_type const* table = static_cast<table_type*>(data)) {
+                        if (listener_thunk const* thunk = table[I].get()) {
                             auto rest_args = std::tuple{rest...};
                             thunk->push(&rest_args);
                         }
@@ -270,37 +286,23 @@ namespace mvll::inline wayland::inline client
 
     public:
         thunk_table() : table_{new table_type{}} {}
-        ~thunk_table() noexcept { reset(); }
-        thunk_table(thunk_table&& other) noexcept : table_{std::exchange(other.table_, nullptr)} {}
-
-        thunk_table& operator=(thunk_table&& other) noexcept {
-            reset(std::forward(other.table_, nullptr));
-            return *this;
-        }
-        thunk_table(thunk_table const&) = delete;
-        thunk_table& operator=(thunk_table const&) = delete;
 
     public:
-        std::int32_t start(T* target) MVLL_NOEXCEPT {
-            MVLL_CHECK(this->table_);
+        std::int32_t start(T* target) noexcept {
             return wl_proxy_add_listener(
                 target,
                 reinterpret_cast<void(**)(void)>(&listener),
-                this);
+                this->table_.get());
         }
 
-        // template <auto Member> //!!!
-        // void 
-
-    private:
-        void reset(thunk_table* raw = nullptr) noexcept {
-            if (auto old = std::exchange(table_, raw); old && old != raw) {
-                for (auto& thunk : old) delete std::exchange(thunk, nullptr);
-            }
+        template <auto Member> //!!!
+        void add(listener_thunk* raw) noexcept {
+            static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
+            (*table_.get())[ordinal] = raw;
         }
 
     private:
-        table_type table_;
+        internals::move_only_pointer<table_type> table_;
     };
 
     template <class> class proxy;
@@ -322,7 +324,7 @@ namespace mvll::inline wayland::inline client
                 ([]<class ...Rest>(void* data, Rest... rest) {
                     auto const* pinned_raw = static_cast<storage*>(data);
                     MVLL_CHECK(pinned_raw);
-                    if (auto bridge = pinned_raw->slots[I].get()) {
+                    if (auto const* bridge = pinned_raw->slots[I].get()) {
                         auto rest_args = std::tuple{rest...};
                         bridge->push(&rest_args);
                     }
@@ -346,7 +348,7 @@ namespace mvll::inline wayland::inline client
                     reinterpret_cast<void(**)(void)>(&listener),
                     pin.get()));
             }
-        ~proxy() noexcept override {
+        ~proxy() noexcept {
             // if (thunk_array) {
             //     for (std::size_t i = 0; i < THUNK_ARRAY_SIZE; ++i) {
             //         delete std::exchange(thunk_array[i], nullptr);
@@ -579,3 +581,11 @@ int main(int, char** argv) {
     }
     return 0;
 }
+
+consteval int f() {
+    MVLL_CHECK(true);
+    return 42;
+}
+
+constexpr int i = f();
+static_assert(i == 42);
