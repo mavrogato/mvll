@@ -77,6 +77,7 @@ target_compile_definitions(mvll PRIVATE
 target_compile_options(mvll PRIVATE
   -Wall
   -Wextra
+#  -save-temps
   ${SYCL_FLAGS}
 )
 target_include_directories(mvll PRIVATE
