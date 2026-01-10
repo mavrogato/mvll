@@ -7,8 +7,6 @@
 #include <exception>
 #include <filesystem>
 #include <forward_list>
-#include <iostream>
-#include <memory>
 #include <tuple>
 #include <type_traits>
 #include <variant>
@@ -17,7 +15,7 @@
 #include <mvll/cpp2x/tuple-support.hpp>
 #include <mvll/platform/linux.hpp>
 #include <mvll/unique.hpp>
-#include "mvll/versor.hpp"
+#include <mvll/versor.hpp>
 
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
@@ -117,7 +115,7 @@ namespace mvll::inline wayland::inline client
             constexpr move_only_pointer(T const&) = delete;
             constexpr move_only_pointer& operator=(T const&) = delete;
             static void deleter(T* raw) noexcept {
-                if constexpr (DELETER) {
+                if constexpr (DELETER != nullptr) {
                     DELETER(raw);
                 }
                 else {
@@ -271,11 +269,11 @@ namespace mvll::inline wayland::inline client
         using table_type = std::array<internals::move_only_pointer<listener_thunk>, SIZE>;
 
     private:
-        static auto listener = []<std::size_t ...I>(std::index_sequence<I...>) noexcept {
+        static inline listener_type<T> listener = []<std::size_t ...I>(std::index_sequence<I...>) noexcept {
             return listener_type<T> {
                 ([]<class ...Rest>(void* data, Rest... rest) {
                     if (table_type const* table = static_cast<table_type*>(data)) {
-                        if (listener_thunk const* thunk = table[I].get()) {
+                        if (listener_thunk const* thunk = (*table)[I].get()) {
                             auto rest_args = std::tuple{rest...};
                             thunk->push(&rest_args);
                         }
@@ -290,7 +288,7 @@ namespace mvll::inline wayland::inline client
     public:
         std::int32_t start(T* target) noexcept {
             return wl_proxy_add_listener(
-                target,
+                reinterpret_cast<wl_proxy*>(target),
                 reinterpret_cast<void(**)(void)>(&listener),
                 this->table_.get());
         }
@@ -298,7 +296,7 @@ namespace mvll::inline wayland::inline client
         template <auto Member> //!!!
         void add(listener_thunk* raw) noexcept {
             static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
-            (*table_.get())[ordinal] = raw;
+            (*table_.get())[ordinal].reset(raw);
         }
 
     private:
@@ -314,61 +312,24 @@ namespace mvll::inline wayland::inline client
     };
     template <is_proxy_observable T>
     class proxy<T> : public proxy_impl<T> {
-    private:
-        static constexpr std::size_t THUNK_TABLE_SIZE = sizeof (listener_type<T>) / sizeof (void*);
-        struct storage {
-            std::array<std::unique_ptr<listener_thunk>, THUNK_TABLE_SIZE> slots;
-        };
-        static inline auto listener = []<size_t... I>(std::index_sequence<I...>) noexcept {
-            return listener_type<T> {
-                ([]<class ...Rest>(void* data, Rest... rest) {
-                    auto const* pinned_raw = static_cast<storage*>(data);
-                    MVLL_CHECK(pinned_raw);
-                    if (auto const* bridge = pinned_raw->slots[I].get()) {
-                        auto rest_args = std::tuple{rest...};
-                        bridge->push(&rest_args);
-                    }
-                })...
-            };
-        }(std::make_index_sequence<THUNK_TABLE_SIZE>());
-
     public:
         proxy()
             : proxy_impl<T>::proxy_impl{}
-            , pin{}
+            , table_{}
             {
             }
         proxy(T* raw)
             : proxy_impl<T>::proxy_impl{raw}
-            , pin{new storage{.slots = {}}}
+            , table_{}
             {
-                MVLL_CHECK(pin != nullptr);
-                MVLL_CHECK(-1 != wl_proxy_add_listener(
-                    reinterpret_cast<wl_proxy*>(this->get()),
-                    reinterpret_cast<void(**)(void)>(&listener),
-                    pin.get()));
+                MVLL_CHECK(-1 != table_.start(this->get()));
             }
-        ~proxy() noexcept {
-            // if (thunk_array) {
-            //     for (std::size_t i = 0; i < THUNK_ARRAY_SIZE; ++i) {
-            //         delete std::exchange(thunk_array[i], nullptr);
-            //     }
-            //     delete[] std::exchange(thunk_array, nullptr);
-            // }
-        }
-        proxy(proxy&&) noexcept = default;
-        proxy& operator=(proxy&& other) noexcept = default;
-        proxy(proxy const&) = delete;
-        proxy& operator=(proxy const&) = delete;
 
     public:
         void rebind(T* raw) MVLL_NOEXCEPT {
             MVLL_CHECK(raw != this->get());
             this->reset(raw);
-            MVLL_CHECK(-1 != wl_proxy_add_listener(
-                reinterpret_cast<wl_proxy*>(this->get()),
-                reinterpret_cast<void(**)(void)>(&listener),
-                pin.get()));
+            MVLL_CHECK(-1 != table_.start(this->get()));
         }
 
     public:
@@ -383,20 +344,16 @@ namespace mvll::inline wayland::inline client
         template <class Func, class... InitialArgs>
         void on(Func&& coro, InitialArgs&&... init) {
             constexpr auto Member = get_member_v<Func>;
-            static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
-            pin->slots[ordinal].reset(new fiblet<Member>{coro(std::forward<InitialArgs>(init)...)});
-            MVLL_CHECK(pin->slots[ordinal]);
+            table_.template add<Member>(new fiblet<Member>{coro(std::forward<InitialArgs>(init)...)});
         }
         template <auto Member, class Func>
         void on(Func&& func) {
             using DecayFunc = std::decay_t<Func>;
-            static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
-            pin->slots[ordinal].reset(new action<Member, DecayFunc>{std::forward<DecayFunc>(func)});
-            MVLL_CHECK(pin->slots[ordinal]);
+            table_.template add<Member>(new action<Member, DecayFunc>{std::forward<DecayFunc>(func)});
         }
 
     private:
-        std::unique_ptr<storage> pin;
+        thunk_table<T> table_;
     };
 
     template <is_proxy T>
@@ -464,19 +421,16 @@ int main(int, char** argv) {
                     keyboard.on([] -> fiblet<&wl_keyboard_listener::key> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
-                            std::cout << "key: " << args << std::endl;
                         }
                     });
                     keyboard.on([] -> fiblet<&wl_keyboard_listener::modifiers> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
-                            std::cout << "key mod: " << args << std::endl;
                         }
                     });
                     keyboard.on([] -> fiblet<&wl_keyboard_listener::repeat_info> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
-                            std::cout << "key repeat: " << args << std::endl;
                         }
                     });
                 }
@@ -490,7 +444,6 @@ int main(int, char** argv) {
                     pointer.on([] -> fiblet<&wl_pointer_listener::axis_value120> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
-                            std::cout << "axis120: " << args << std::endl;
                         }
                     });
                 }
@@ -504,7 +457,6 @@ int main(int, char** argv) {
                     touch.on([] -> fiblet<&wl_touch_listener::motion> {
                         for (;;) {
                             [[maybe_unused]] auto const& args = co_await wait_current_args{};
-                            std::cout << "touch.motion: " << args << std::endl;
                         }
                     });
                 }
@@ -563,7 +515,7 @@ int main(int, char** argv) {
             frame.on<&wl_callback_listener::done>([&](wl_callback*, std::uint32_t) MVLL_NOEXCEPT {
                 frame.rebind(wl_surface_frame(surface));
                 wl_surface_attach(surface, primary_buffer, 0, 0);
-                wl_surface_damage(surface, 0, 0, cx, cy);
+                wl_surface_damage_buffer(surface, 0, 0, cx, cy);
                 wl_surface_commit(surface);
                 wl_display_flush(display);
             });
@@ -581,11 +533,3 @@ int main(int, char** argv) {
     }
     return 0;
 }
-
-consteval int f() {
-    MVLL_CHECK(true);
-    return 42;
-}
-
-constexpr int i = f();
-static_assert(i == 42);

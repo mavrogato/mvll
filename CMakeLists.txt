@@ -98,6 +98,7 @@ add_executable(mvll-test
   test/unique-test.cc
   test/generator-test.cc
   test/channel-test.cc
+  test/reflector-test.cc
 )
 target_compile_definitions(mvll PRIVATE
   HERSHEY_FONTS_DIR="${HERSHEY_DATA_DIR}"
@@ -124,4 +125,9 @@ add_custom_target(run
   DEPENDS mvll
   DEPENDS mvll-test
   COMMAND ctest --verbose && ./mvll
+)
+
+add_custom_target(run-test
+  DEPENDS mvll-test
+  COMMAND ctest --verbose
 )
