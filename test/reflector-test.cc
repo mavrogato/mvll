@@ -86,25 +86,17 @@ auto to_tuple(T&& s) {
 
 TEST_CASE("proxy interner", "[mvll][wayland][client][reflector]") {
     using namespace mvll;
-    std::cout << proxy_meta_info<"wl_display">::name << std::endl;
-    std::cout << proxy_meta_info<"wl_display">::deleter << std::endl;
-    std::cout << to_tuple(*proxy_meta_info<"wl_display">::interface_ptr) << std::endl;
-    std::cout << to_tuple(*proxy_meta_info<"wl_registry">::interface_ptr) << std::endl;
-    std::cout << to_tuple(*proxy_meta_info<"wl_compositor">::interface_ptr) << std::endl;
-    std::cout << typeid (proxy_meta_info<"wl_display">::listener_type).name() << std::endl;
-    std::cout << typeid (proxy_meta_info<"wl_registry">::listener_type).name() << std::endl;
-    std::cout << typeid (proxy_meta_info<"wl_compositor">::listener_type).name() << std::endl;
+    std::cout << proxy_meta_info<wl_display>::name << std::endl;
+    std::cout << proxy_meta_info<wl_display>::deleter << std::endl;
+    std::cout << to_tuple(*proxy_meta_info<wl_display>::interface_ptr) << std::endl;
+    std::cout << to_tuple(*proxy_meta_info<wl_registry>::interface_ptr) << std::endl;
+    std::cout << to_tuple(*proxy_meta_info<wl_compositor>::interface_ptr) << std::endl;
+    std::cout << typeid (proxy_meta_info<wl_display>::listener_type).name() << std::endl;
+    std::cout << typeid (proxy_meta_info<wl_registry>::listener_type).name() << std::endl;
+    std::cout << typeid (proxy_meta_info<wl_compositor>::listener_type).name() << std::endl;
+    
 }
 
-
-template <class L>
-concept is_defined = requires { sizeof (L); };
-
-TEST_CASE("", "") {
-    struct wl_compositor_listener;
-    std::cout << is_defined<wl_compositor_listener> << std::endl;
-    std::cout << is_defined<wl_registry_listener> << std::endl;
-}
 
 // struct hoge {
 //     int i;

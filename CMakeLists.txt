@@ -100,6 +100,7 @@ add_executable(mvll-test
   test/generator-test.cc
   test/channel-test.cc
   test/reflector-test.cc
+  test/proxy-meta-test.cc
 )
 target_compile_definitions(mvll PRIVATE
   HERSHEY_FONTS_DIR="${HERSHEY_DATA_DIR}"
@@ -116,6 +117,7 @@ target_include_directories(mvll-test PRIVATE
 target_link_libraries(mvll-test PRIVATE
   sycl
   wayland-client
+  wayland-protocols-mvll
   Catch2::Catch2WithMain
   ${HERSHEY_LIBRARY}
 )
