@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.28)
 project(mvll)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_C_STANDARD 17)
 set(SYCL_FLAGS -fsycl -fsycl-targets=nvptx64-nvidia-cuda)
 
@@ -101,6 +101,7 @@ add_executable(mvll-test
   test/channel-test.cc
   test/reflector-test.cc
   test/proxy-meta-test.cc
+  test/pfr-test.cc
 )
 target_compile_definitions(mvll PRIVATE
   HERSHEY_FONTS_DIR="${HERSHEY_DATA_DIR}"
