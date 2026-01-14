@@ -1,8 +1,9 @@
 
 #include <wayland-client-core.h>
 #include <xdg-shell-client.h>
+#include <mvll/wayland/client/proxy-pre.hpp>
 #define MVLL_PROXY_LIST(V) \
-    V(xdg_wm_base)
+    V(xdg_wm_base, PROXY_ATTR_HAS_LISTENER)
 #include <mvll/wayland/client/proxy-meta.hpp>
 
 #include <catch2/catch_all.hpp>
@@ -16,17 +17,17 @@ TEST_CASE("enumeration", "[mvll][wayland][client][proxy-meta]") {
 }
 
 TEST_CASE("display connect/disconnect via metadb", "[mvll][wayland][client][proxy-meta]") {
-    auto const& info = mvll::metadb[0];
+    constexpr auto& info = mvll::wayland::client::metadb[0];
     SECTION("metadata validation") {
         REQUIRE(info.id == mvll::wayland::client::proxy_id::wl_display_id);
         REQUIRE(std::string_view(info.name) == "wl_display");
         REQUIRE(info.interface_ptr == &wl_display_interface);
-        REQUIRE(info.deleter != nullptr);
     }
     SECTION("actual execution") {
         auto* display = wl_display_connect(nullptr);
         if (display) {
-            info.deleter(display); 
+            mvll::wayland::client::delete_proxy<
+                mvll::wayland::client::proxy_type<info.id>>(display);
             SUCCEED("Successfully disconnected wl_display via erased deleter");
         }
         else {
@@ -36,13 +37,16 @@ TEST_CASE("display connect/disconnect via metadb", "[mvll][wayland][client][prox
 }
 
 TEST_CASE("registry via metadb", "[mvll][wayland][client][proxy-meta]") {
-    constexpr auto rid = mvll::wayland::client::proxy_id::wl_registry_id;
-    const auto& info = mvll::wayland::client::metadb[static_cast<size_t>(rid)];
+    using namespace mvll::wayland::client;
+    constexpr auto rid = proxy_id::wl_registry_id;
+    constexpr auto& info = metadb[static_cast<std::size_t>(rid)];
     if (auto* display = wl_display_connect(nullptr)) {
         auto* registry = wl_display_get_registry(display);
         REQUIRE(registry);
-        REQUIRE(info.deleter);
-        REQUIRE(info.listener_adder);
+        auto deleter = delete_proxy<proxy_type<info.id>>;
+        REQUIRE(deleter);
+        auto listener_adder = add_listener<proxy_type<info.id>>;
+        REQUIRE(listener_adder);
         int count = 0;
         wl_registry_listener listener = {
             .global = [](void* data, auto...) {
@@ -52,10 +56,10 @@ TEST_CASE("registry via metadb", "[mvll][wayland][client][proxy-meta]") {
             .global_remove = [](auto...) {
             }
         };
-        info.listener_adder(registry, &listener, &count);
+        listener_adder(registry, &listener, &count);
         wl_display_roundtrip(display);
         REQUIRE(0 < count);
-        info.deleter(registry);
+        deleter(registry);
         wl_display_disconnect(display);
         SUCCEED("Successfully destroyed wl_registry via erased deleter");
     }
@@ -76,5 +80,8 @@ TEST_CASE("dispatching", "[mvll][wayland][client][proxy-meta]") {
 }
 
 TEST_CASE("event traits", "[mvll][wayland][client][proxy-meta]") {
-    //REQUIRE(mvll::event_traits<&wl_pointer_listener::enter>::ordinal == 0);
+    static_assert(mvll::event_traits<&wl_registry_listener::global>::ordinal == 0);
+    static_assert(mvll::event_traits<&wl_registry_listener::global_remove>::ordinal == 1);
+    REQUIRE(mvll::event_traits<&wl_registry_listener::global>::ordinal == 0);
+    REQUIRE(mvll::event_traits<&wl_registry_listener::global_remove>::ordinal == 1);
 }

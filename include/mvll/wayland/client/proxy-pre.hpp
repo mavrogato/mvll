@@ -1,37 +1,32 @@
 #ifndef INCLUDE_MVLL_WAYLAND_CLIENT_PROXY_PRE_HPP
 #define INCLUDE_MVLL_WAYLAND_CLIENT_PROXY_PRE_HPP
 
-#include <cstdint>
+#include <wayland-client-protocol.h>
 
-namespace mvll::inline wayland::inline client
-{    
-    enum class proxy_attributes : std::uint32_t {
-        plain = 0,
-        has_listener = 1,
-        // suppress_action = 2,
-        // suppress_fiblet = 4,
-    };
+#define PROXY_ATTR_NONE 0
+#define PROXY_ATTR_HAS_LISTENER 1
 
-    // template <class E> struct is_bitmask_enum : std::false_type {};
-    // template <> struct is_bitmask_enum<proxy_attributes> : std::true_type {};
-    // template <class E> concept is_bitmask = is_bitmask_enum<E>::type;
-    // template <is_bitmask E>
-    // constexpr E operator|(E lhs, E rhs) noexcept {
-    //     return static_cast<E>(static_cast<std::uint32_t>(lhs) | static_cast<std::uint32_t>(rhs));
-    // }
-    // template <is_bitmask E>
-    // constexpr E operator&(E lhs, E rhs) noexcept {
-    //     return static_cast<E>(static_cast<std::uint32_t>(lhs) & static_cast<std::uint32_t>(rhs));
-    // }
-    // template <is_bitmask E>
-    // constexpr E operator^(E lhs, E rhs) noexcept {
-    //     return static_cast<E>(static_cast<std::uint32_t>(lhs) ^ static_cast<std::uint32_t>(rhs));
-    // }
-    // template <is_bitmask E>
-    // constexpr E operator~(E lhs) noexcept {
-    //     return static_cast<E>(~static_cast<std::uint32_t>(lhs));
-    // }
+#define MVLL_PROXY_LIST_BUILTIN(V)                      \
+    V(wl_display,             PROXY_ATTR_NONE)          \
+    V(wl_registry,            PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_compositor,          PROXY_ATTR_NONE)          \
+    V(wl_shm,                 PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_shm_pool,            PROXY_ATTR_NONE)          \
+    V(wl_buffer,              PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_callback,            PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_output,              PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_seat,                PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_pointer,             PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_keyboard,            PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_touch,               PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_surface,             PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_region,              PROXY_ATTR_NONE)          \
+    V(wl_subsurface,          PROXY_ATTR_NONE)          \
+    V(wl_subcompositor,       PROXY_ATTR_NONE)          \
+    V(wl_data_offer,          PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_data_source,         PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_data_device,         PROXY_ATTR_HAS_LISTENER)  \
+    V(wl_data_device_manager, PROXY_ATTR_NONE)
 
-} // ::mvll::wayland::client
 
 #endif /*INCLUDE_MVLL_WAYLAND_CLIENT_PROXY_PRE_HPP*/

@@ -13,26 +13,6 @@
 #include <mvll/pfr.hpp>
 #include <mvll/wayland/client/proxy-pre.hpp>
 
-#define MVLL_PROXY_LIST_BUILTIN(V) \
-    V(wl_registry)                 \
-    V(wl_compositor)               \
-    V(wl_shm)                      \
-    V(wl_shm_pool)                 \
-    V(wl_buffer)                   \
-    V(wl_callback)                 \
-    V(wl_output)                   \
-    V(wl_seat)                     \
-    V(wl_pointer)                  \
-    V(wl_keyboard)                 \
-    V(wl_touch)                    \
-    V(wl_surface)                  \
-    V(wl_region)                   \
-    V(wl_subsurface)               \
-    V(wl_subcompositor)            \
-    V(wl_data_offer)               \
-    V(wl_data_source)              \
-    V(wl_data_device)              \
-    V(wl_data_device_manager)
 
 #ifdef MVLL_PROXY_LIST
 #define MVLL_PROXY_LIST_MASTER(V)  \
@@ -43,18 +23,30 @@
     MVLL_PROXY_LIST_BUILTIN(V)
 #endif
 
-// Note: pollutive
-#define MVLL_INTERN_DUMMY_DEFINITION(CLASS) struct CLASS##_listener;
-MVLL_PROXY_LIST_MASTER(MVLL_INTERN_DUMMY_DEFINITION)
-#undef MVLL_INTERN_DUMMY_DEFINITION
+#define MVLL_CONCAT_EVAL(a, b)            a##b
+#define MVLL_CONCAT(a, b)                 MVLL_CONCAT_EVAL(a, b)
+#define MVLL_EXPAND(x)                    x
+#define MVLL_BOOL_1                       _YES
+#define MVLL_BOOL_0                       _NO
+#define MVLL_BOOL_PROXY_ATTR_HAS_LISTENER _YES
+#define MVLL_BOOL_PROXY_ATTR_NONE         _NO
+#define MVLL_IF__YES(THEN, ELSE)          THEN
+#define MVLL_IF__NO(THEN, ELSE)           ELSE
+#define MVLL_IF(COND, THEN, ELSE)                                       \
+    MVLL_EXPAND(MVLL_CONCAT(MVLL_IF_, MVLL_CONCAT(MVLL_BOOL_, COND)))(THEN, ELSE)
+#define MVLL_WHEN__YES(...)  __VA_ARGS__
+#define MVLL_WHEN__NO(...) 
+#define MVLL_WHEN(COND, ...)                                            \
+    MVLL_EXPAND(MVLL_CONCAT(MVLL_WHEN_, MVLL_CONCAT(MVLL_BOOL_, COND)))(__VA_ARGS__)
+#define MVLL_UNLESS(COND, ...)                                          \
+    MVLL_EXPAND(MVLL_CONCAT(MVLL_WHEN_, MVLL_CONCAT(MVLL_BOOL_, COND)))( /* empty */, __VA_ARGS__ )
 
 namespace mvll::inline wayland::inline client
 {
     template <class T> concept is_defined = requires { sizeof (T); };
 
     enum class proxy_id : std::uint32_t {
-        wl_display_id = 0,
-#define MVLL_INTERN_PROXY_ID(CLASS)             \
+#define MVLL_INTERN_PROXY_ID(CLASS, ATTR)       \
         CLASS##_id,
         MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_ID)
 #undef MVLL_INTERN_PROXY_ID
@@ -63,54 +55,43 @@ namespace mvll::inline wayland::inline client
     };
     constexpr std::size_t NOF_PROXIES = static_cast<std::size_t>(proxy_id::NOF_PROXIES);
 
-    using erased_dsig = void (*)(void*);
-    using erased_asig = int (*)(void*, void*, void*);
+    namespace internals
+    {
+        template <proxy_id ID> struct proxy_type_impl;
+#define MVLL_INTERN_PROXY_TYPE(CLASS, ATTR)                     \
+        template <> struct proxy_type_impl<proxy_id::CLASS##_id> {  \
+            using type = CLASS;                                     \
+        };
+        MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_TYPE)
+#undef MVLL_INTERN_PROXY_TYPE
+    }
+    template <proxy_id ID> using proxy_type = internals::proxy_type_impl<ID>::type;
 
     struct proxy_metainfo {
         proxy_id id = proxy_id::INVALID_PROXY_ID;
-        char const *const name = "unknown";
+        std::uint32_t attr = 0;
+        char const *const name = "invalid";
         wl_interface const *const interface_ptr = nullptr;
-        bool has_listener = false;
-        erased_dsig deleter = nullptr;
-        erased_asig listener_adder = nullptr;
+
+        constexpr bool has_listener() const noexcept {
+            return 0 != (attr & PROXY_ATTR_HAS_LISTENER);
+        }
     };
     constexpr std::array<proxy_metainfo, NOF_PROXIES> metadb {
-        proxy_metainfo{
-            proxy_id::wl_display_id,
-            "wl_display",
-            &wl_display_interface,
-            false,
-            [](void* p) noexcept {
-                wl_display_disconnect(reinterpret_cast<wl_display*>(p));
-            },
-            nullptr,
-        },
-#define MVLL_INTERN_PROXY_METAINFO(CLASS)                               \
+#define MVLL_INTERN_PROXY_METAINFO(CLASS, ATTR)                         \
         proxy_metainfo{                                                 \
             proxy_id::CLASS##_id,                                       \
+            ATTR,                                                       \
             #CLASS,                                                     \
             &CLASS##_interface,                                         \
-            is_defined<CLASS##_listener>,                               \
-            [](void* p) noexcept {                                      \
-                CLASS##_destroy(static_cast<CLASS*>(p));                \
-            },                                                          \
-            (is_defined<CLASS##_listener> ?                             \
-             [](void* proxy, void* callback, void* data) noexcept {     \
-                 return wl_proxy_add_listener(                          \
-                     reinterpret_cast<wl_proxy*>(proxy),                \
-                     reinterpret_cast<void(**)(void)>(callback),        \
-                     data);                                             \
-             } : nullptr),                                              \
         },
         MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_METAINFO)
-#undef MVLL_INTERN_PROXY_META_INFO
+#undef MVLL_INTERN_PROXY_METAINFO
     };
-    
     template <class F>
     constexpr auto dispatch_by_id(proxy_id id, F&& func) {
         switch (id) {
-        case proxy_id::wl_display_id: return func.template operator()<wl_display>();
-#define MVLL_INTERN_DISPATCH_CASE(CLASS)                                \
+#define MVLL_INTERN_DISPATCH_CASE(CLASS, ATTR)                          \
             case proxy_id::CLASS##_id: return func.template operator()<CLASS>();
             MVLL_PROXY_LIST_MASTER(MVLL_INTERN_DISPATCH_CASE)
 #undef MVLL_INTERN_DISPATCH_CASE
@@ -119,28 +100,51 @@ namespace mvll::inline wayland::inline client
     }
 
     template <class T> inline constexpr proxy_id identifier = proxy_id::INVALID_PROXY_ID;
-    template <> inline constexpr proxy_id identifier<wl_display> = proxy_id::wl_display_id;
-#define MVLL_INTERN_PROXY_ID_VALUE(CLASS) \
+#define MVLL_INTERN_PROXY_ID_VALUE(CLASS, ATTR)                         \
     template <> constexpr inline proxy_id identifier<CLASS> = proxy_id::CLASS##_id;
     MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_ID_VALUE)
 #undef MVLL_INTERN_PROXY_ID_VALUE
 
     template <class T> concept is_proxy = ((identifier<T>) < proxy_id::NOF_PROXIES);
-    template <class T> concept is_proxy_observable =
-        metadb[static_cast<std::size_t>(identifier<T>)].has_listener;
-    template <is_proxy T> struct proxy_to_listener_impl;
-    template <class L> struct listener_to_proxy_impl;
-#define MVLL_INTERN_PROXY_LISTENER(CLASS)                         \
-    template <> struct proxy_to_listener_impl<CLASS> {            \
-        using listener_type = CLASS##_listener;                   \
-    };                                                            \
-    template <> struct listener_to_proxy_impl<CLASS##_listener> { \
-        using proxy_type = CLASS;                                 \
-    };
-    MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_LISTENER)
+
+    namespace internals
+    {
+        template <is_proxy T> struct proxy_to_listener_impl;
+        template <class L> struct listener_to_proxy_impl;
+#define MVLL_INTERN_PROXY_LISTENER(CLASS, ATTR)                         \
+        MVLL_WHEN(                                                      \
+            ATTR,                                                       \
+            template <> struct proxy_to_listener_impl<CLASS> {          \
+                using type = CLASS##_listener;                          \
+            };                                                          \
+            template <> struct listener_to_proxy_impl<CLASS##_listener> { \
+                using type = CLASS;                                     \
+            };                                                          \
+        )
+        MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_LISTENER)
 #undef MVLL_INTERN_PROXY_LISTENER
-    template <is_proxy_observable T> using listener_type = proxy_to_listener_impl<T>::type;
-    template <class L> concept is_listener = requires { listener_to_proxy_impl<L>::proxy_type; };
+    }
+    template <class T> concept is_proxy_observable = requires {
+        typename internals::proxy_to_listener_impl<T>::type;
+    };
+
+    template <is_proxy_observable T> using listener_type = internals::proxy_to_listener_impl<T>::type;
+    template <class L> concept is_listener = requires {
+        typename internals::listener_to_proxy_impl<L>::type;
+    };
+
+    template <class T> inline void (*delete_proxy)(T*) = nullptr;
+    template <> inline void (*delete_proxy<wl_display>)(wl_display*) = wl_display_disconnect;
+    template <is_proxy T> inline void (*delete_proxy<T>)(T*) noexcept = [](T* raw) noexcept {
+        wl_proxy_destroy(reinterpret_cast<wl_proxy*>(raw));
+    };
+    template <is_proxy_observable T>
+    inline int add_listener(T* raw, listener_type<T> const* listener, void* data) noexcept {
+        return wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(raw),
+                                     reinterpret_cast<void (**)(void)>(
+                                         const_cast<listener_type<T>*>(listener)),
+                                     data);
+    }
 
     template <class T> struct event_signature_traits;
     template <class... Rest>
@@ -155,18 +159,21 @@ namespace mvll::inline wayland::inline client
     };
     template <class T> concept is_event_signature = requires { event_signature_traits<T>::arity; };
 
-    template <class, auto> struct event_traits_impl;
-    template <is_listener L, is_event_signature M, M L::*Member>
-    struct event_traits_impl<M L::*, Member> {
-        using proxy_type = listener_to_proxy_impl<L>;
-        using listener_type = std::remove_pointer_t<L>;
-        using member_type = M;
-        using rest_args_tuple = typename event_signature_traits<M>::rest_args_tuple;
-        static inline constexpr std::uint32_t ordinal = [] noexcept {
-            return pfr::get_ordinal<L, Member>();
-        }();
-    };
-    template <auto Member> using event_traits = event_traits_impl<decltype (Member), Member>;
+    namespace internals
+    {
+        template <class, auto> struct event_traits_impl;
+        template <is_listener L, is_event_signature M, M L::*Member>
+        struct event_traits_impl<M L::*, Member> {
+            using proxy_type = internals::listener_to_proxy_impl<L>::type;
+            using listener_type = std::remove_pointer_t<L>;
+            using member_type = M;
+            using rest_args_tuple = typename event_signature_traits<M>::rest_args_tuple;
+            static inline constexpr std::uint32_t ordinal = [] noexcept {
+                return pfr::get_ordinal<L, Member>();
+            }();
+        };
+    }
+    template <auto Member> using event_traits = internals::event_traits_impl<decltype (Member), Member>;
 
 } // ::mvll::wayland::client
 

@@ -63,7 +63,8 @@ add_library(wayland-protocols-mvll
 )
 target_compile_options(wayland-protocols-mvll PRIVATE
   -Wall
-  -Wextra)
+  -Wextra
+)
 
 #############################################################################
 add_executable(mvll
@@ -77,7 +78,6 @@ target_compile_definitions(mvll PRIVATE
 target_compile_options(mvll PRIVATE
   -Wall
   -Wextra
-#  -save-temps
   ${SYCL_FLAGS}
 )
 target_include_directories(mvll PRIVATE
@@ -96,12 +96,14 @@ target_link_libraries(mvll PRIVATE
 enable_testing()
 add_executable(mvll-test
   mvll-test.cc
+  test/pfr-test.cc
+  test/fiblet-test.cc
   test/unique-test.cc
   test/generator-test.cc
   test/channel-test.cc
   test/reflector-test.cc
   test/proxy-meta-test.cc
-  test/pfr-test.cc
+  test/proxy-wrapper-test.cc
 )
 target_compile_definitions(mvll PRIVATE
   HERSHEY_FONTS_DIR="${HERSHEY_DATA_DIR}"
@@ -109,6 +111,7 @@ target_compile_definitions(mvll PRIVATE
 target_compile_options(mvll-test PRIVATE
   -Wall
   -Wextra
+  #  -save-temps
 )
 target_include_directories(mvll-test PRIVATE
   ${CMAKE_CURRENT_BINARY_DIR}
