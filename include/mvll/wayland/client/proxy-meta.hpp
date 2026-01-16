@@ -58,7 +58,7 @@ namespace mvll::inline wayland::inline client
     namespace internals
     {
         template <proxy_id ID> struct proxy_type_impl;
-#define MVLL_INTERN_PROXY_TYPE(CLASS, ATTR)                     \
+#define MVLL_INTERN_PROXY_TYPE(CLASS, ATTR)                         \
         template <> struct proxy_type_impl<proxy_id::CLASS##_id> {  \
             using type = CLASS;                                     \
         };
@@ -169,7 +169,7 @@ namespace mvll::inline wayland::inline client
             using member_type = M;
             using rest_args_tuple = typename event_signature_traits<M>::rest_args_tuple;
             static inline constexpr std::uint32_t ordinal = [] noexcept {
-                return pfr::get_ordinal<L, Member>();
+                return pfr::get_ordinal<Member, [](auto...){}>();
             }();
         };
     }

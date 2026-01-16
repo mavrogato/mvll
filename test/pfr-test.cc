@@ -8,10 +8,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 TEST_CASE("basic", "[mvll][pfr]") {
-    static_assert(0 == mvll::get_ordinal<wl_seat_listener, &wl_seat_listener::capabilities>());
-    static_assert(1 == mvll::get_ordinal<wl_seat_listener, &wl_seat_listener::name>());
-    REQUIRE(0 == mvll::get_ordinal<wl_registry_listener, &wl_registry_listener::global>());
-    REQUIRE(1 == mvll::get_ordinal<wl_registry_listener, &wl_registry_listener::global_remove>());
+    static_assert(0 == mvll::get_ordinal<&wl_seat_listener::capabilities, [](auto...){}>());
+    static_assert(1 == mvll::get_ordinal<&wl_seat_listener::name, [](auto...){}>());
+    REQUIRE(0 == mvll::get_ordinal<&wl_registry_listener::global, [](auto...){}>());
+    REQUIRE(1 == mvll::get_ordinal<&wl_registry_listener::global_remove, [](auto...){}>());
 }
 
 TEST_CASE("to_tuple validation", "[mvll][pfr]") {
@@ -70,8 +70,8 @@ TEST_CASE("monster protocols", "[mvll][pfr]") {
     SECTION("wl_pointer consistency") {
         // ボタンと軸、シグネチャが似ていても物理的な順序を正しく引けるか
         // 実際、button は 3番目(0-indexed)、axis は 4番目のはず
-        static_assert(3 == get_ordinal<wl_pointer_listener, &wl_pointer_listener::button>());
-        static_assert(4 == get_ordinal<wl_pointer_listener, &wl_pointer_listener::axis>());
+        static_assert(3 == get_ordinal<&wl_pointer_listener::button, [](auto...){}>());
+        static_assert(4 == get_ordinal<&wl_pointer_listener::axis, [](auto...){}>());
         
         SUCCEED("wl_pointer ordinal verified");
     }
@@ -82,8 +82,8 @@ TEST_CASE("monster protocols", "[mvll][pfr]") {
         // zwp_tablet_tool_v2_listener の末尾の方のメンバー
         // 17: wheel, 18: button, 19: frame (XML準拠)
         // インデックス 18 が button であることを確認
-        static_assert(17 == get_ordinal<zwp_tablet_tool_v2_listener, &zwp_tablet_tool_v2_listener::button>());
-        static_assert(18 == get_ordinal<zwp_tablet_tool_v2_listener, &zwp_tablet_tool_v2_listener::frame>());
+        static_assert(17 == get_ordinal<&zwp_tablet_tool_v2_listener::button, [](auto...){}>());
+        static_assert(18 == get_ordinal<&zwp_tablet_tool_v2_listener::frame, [](auto...){}>());
 
         SUCCEED("tablet tool monster verified at index 18");
     }
@@ -99,8 +99,8 @@ TEST_CASE("monster protocols", "[mvll][pfr]") {
 }
 
 TEST_CASE("inliner", "[mvll][pfr]") {
-    static_assert(0 == mvll::ordinal<&wl_seat_listener::capabilities>);
-    static_assert(1 == mvll::ordinal<&wl_seat_listener::name>);
-    REQUIRE(0 == mvll::ordinal<&wl_registry_listener::global>);
-    REQUIRE(1 == mvll::ordinal<&wl_registry_listener::global_remove>);
+    static_assert(0 == mvll::ordinal<&wl_seat_listener::capabilities, [](auto...){}>);
+    static_assert(1 == mvll::ordinal<&wl_seat_listener::name, [](auto...){}>);
+    REQUIRE(0 == mvll::ordinal<&wl_registry_listener::global, [](auto...){}>);
+    REQUIRE(1 == mvll::ordinal<&wl_registry_listener::global_remove, [](auto...){}>);
 }

@@ -1,6 +1,7 @@
 #ifndef INCLUDE_MVLL_PFR_HPP
 #define INCLUDE_MVLL_PFR_HPP
 
+#include <array>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -170,11 +171,22 @@ namespace mvll::inline pfr
 #undef MVLL_TO_TUPLE_BRANCH
     }
 
-    template <typename T, auto Member>
+    template <class T> struct member_pointer_traits;
+    template <class M, class S>
+    struct member_pointer_traits<M S::*> {
+        using struct_type = S;
+        using member_type = std::remove_pointer_t<M>;
+    };
+
+    template <auto Member,
+        typename member_pointer_traits<decltype (Member)>::member_type Mark
+    > requires (std::is_member_pointer_v<decltype (Member)> &&
+                std::is_aggregate_v<typename member_pointer_traits<decltype (Member)>::struct_type>)
     consteval std::uint32_t get_ordinal() {
-        constexpr T prototype = []() {
-            T t{};
-            t.*Member = [](auto...){}; 
+        using struct_type = typename member_pointer_traits<decltype (Member)>::struct_type;
+        constexpr struct_type prototype = []() {
+            struct_type t{};
+            t.*Member = Mark;
             return t;
         }();
         auto [...args] = prototype;
@@ -186,18 +198,12 @@ namespace mvll::inline pfr
         return found_index;
     }
 
-    template <class T> struct member_pointer_traits;
-    template <class R, class T>
-    struct member_pointer_traits<R T::*> {
-        using class_pointer_type = T;
-        using class_type = std::remove_pointer_t<T>;
-        using member_type = R;
-    };
-
-    template <auto Member>
+    template <auto Member,
+        typename member_pointer_traits<decltype (Member)>::member_type Mark
+    > requires (std::is_member_pointer_v<decltype (Member)> &&
+                std::is_aggregate_v<typename member_pointer_traits<decltype (Member)>::struct_type>)
     inline constexpr std::uint32_t ordinal = [] noexcept {
-        using T = member_pointer_traits<decltype (Member)>::class_type;
-        return get_ordinal<T, Member>();
+        return get_ordinal<Member, Mark>();
     }();
 
 } // ::mvll::pfr
