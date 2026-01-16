@@ -15,14 +15,14 @@ namespace mvll
         struct promise_type;
         using handle_type = std::coroutine_handle<promise_type>;
         struct promise_type {
-            void const* current;
-            std::exception_ptr exception = nullptr;
-            std::coroutine_handle<> previous = nullptr;
+            void const* input_ = nullptr;
+            void const* output_ = nullptr;
+            std::coroutine_handle<> continuation = nullptr;
             fiblet_base get_return_object() noexcept {
                 return fiblet_base{handle_type::from_promise(*this)};
             }
-            void unhandled_exception() {
-                this->exception = std::current_exception();
+            [[noreturn]] void unhandled_exception() const noexcept {
+                std::terminate();
             }
             void return_void() const noexcept {}
             std::suspend_never initial_suspend() const noexcept { return {}; }
@@ -32,8 +32,8 @@ namespace mvll
                     void await_resume() const noexcept {}
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
                         auto base_h = std::coroutine_handle<promise_type>::from_address(h.address());
-                        if (auto previous = base_h.promise().previous) {
-                            return previous;
+                        if (auto continuation = base_h.promise().continuation) {
+                            return continuation;
                         }
                         return std::noop_coroutine();
                     }
@@ -41,31 +41,44 @@ namespace mvll
                 return final_awaiter{};
             }
             struct event_awaiter {
-                promise_type& self;
+                promise_type const& self;
                 bool await_ready() const noexcept { return false; }
                 std::coroutine_handle<> await_suspend(std::coroutine_handle<>) const noexcept {
-                    if (auto next = self.previous) {
-                        return next;
+                    if (auto continuation = self.continuation) {
+                        return continuation;
                     }
                     return std::noop_coroutine();                    
                 }
-                void const* await_resume() const noexcept { return self.current; }
+                void const* await_resume() const noexcept { return self.input_; }
             };
-            auto await_transform(wait_current_tag) noexcept {
+            auto await_transform(wait_current_tag) const noexcept {
                 return event_awaiter{*this};
+            }
+            auto yield_value(void const* yielded_val) noexcept {
+                this->output_ = yielded_val;
+                struct yield_awaiter {
+                    promise_type& self;
+                    bool await_ready() const noexcept { return false; }
+                    void const* await_resume() noexcept { return self.input_; }
+                    std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept {
+                        if (self.continuation) return self.continuation;
+                        return std::noop_coroutine();
+                    }
+                };
+                return yield_awaiter{*this};
             }
         };
 
         void connect(fiblet_base& next) const noexcept {
-            MVLL_CHECK(handle_.promise().previous == nullptr);
+            MVLL_CHECK(handle_.promise().continuation == nullptr);
             MVLL_CHECK(next.handle_);
             MVLL_CHECK(!next.handle_.done());
-            this->handle_.promise().previous = next.handle_;
+            this->handle_.promise().continuation = next.handle_;
         }
 
-        void push(void const* update) const {
+        void push(void const* input) const {
             if (handle_ && !handle_.done()) {
-                handle_.promise().current = update;
+                handle_.promise().input_ = input;
                 handle_.resume();
             }
         }
@@ -102,14 +115,14 @@ namespace mvll
             auto await_transform(wait_current_tag) noexcept {
                 struct typed_awaiter : event_awaiter {
                     T const& await_resume() const noexcept {
-                        return *static_cast<T const*>(this->self.current);
+                        return *static_cast<T const*>(this->self.input_);
                     }
                 };
                 return typed_awaiter{{*this}};
             }
         };
-        void push(T const* update) {
-            fiblet_base::push(update);
+        void push(T const* input) {
+            fiblet_base::push(input);
         }
 
     private:
