@@ -2,14 +2,12 @@
 #include "mvll/error-handling.hpp"
 
 #include <array>
-#include <bit>
 #include <coroutine>
 #include <exception>
 #include <filesystem>
 #include <forward_list>
 #include <tuple>
 #include <type_traits>
-#include <variant>
 
 #include <mvll/cpp2x/generator.hpp>
 #include <mvll/cpp2x/tuple-support.hpp>
@@ -20,85 +18,29 @@
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
 #include <wayland-client.h>
-
 #include <xdg-shell-client.h>
 #include <zwp-tablet-v2-client.h>
+#include <mvll/wayland/client/proxy-pre.hpp>
+#define MVLL_PROXY_LIST(V)                                              \
+    V(xdg_wm_base,           PROXY_ATTR_HAS_LISTENER)                   \
+    V(xdg_surface,           PROXY_ATTR_HAS_LISTENER)                   \
+    V(xdg_toplevel,          PROXY_ATTR_HAS_LISTENER)                   \
+    V(zwp_tablet_manager_v2, PROXY_ATTR_NONE)                           \
+    V(zwp_tablet_seat_v2,    PROXY_ATTR_HAS_LISTENER)                   \
+    V(zwp_tablet_tool_v2,    PROXY_ATTR_HAS_LISTENER)
+#include <mvll/wayland/client/proxy-meta.hpp>
 
 
 namespace mvll::inline wayland::inline client
 {
-    template <class> constexpr wl_interface const *const interface_ptr = nullptr;
-    template <class T> concept is_proxy = (interface_ptr<T> != nullptr);
-    template <is_proxy T> std::string_view interface_name = interface_ptr<T>->name;
-    template <is_proxy T> struct listener_type_holder { using type = std::monostate; };
-#define INTERN_CLIENT_PROXY_CONCEPT(CLIENT, LISTENER)                             \
-    template <> constexpr wl_interface const *const interface_ptr<CLIENT> = &CLIENT##_interface; \
-    template <> struct listener_type_holder<CLIENT> { using type = LISTENER; };
-    INTERN_CLIENT_PROXY_CONCEPT(wl_display,            std::monostate)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_registry,           wl_registry_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_compositor,         std::monostate)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_output,             wl_output_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_shm,                wl_shm_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_seat,               wl_seat_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_surface,            wl_surface_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_shm_pool,           std::monostate)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_buffer,             wl_buffer_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_keyboard,           wl_keyboard_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_pointer,            wl_pointer_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_touch,              wl_touch_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(wl_callback,           wl_callback_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(xdg_wm_base,           xdg_wm_base_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(xdg_surface,           xdg_surface_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(xdg_toplevel,          xdg_toplevel_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(zwp_tablet_manager_v2, std::monostate)
-    INTERN_CLIENT_PROXY_CONCEPT(zwp_tablet_seat_v2,    zwp_tablet_seat_v2_listener)
-    INTERN_CLIENT_PROXY_CONCEPT(zwp_tablet_tool_v2,    zwp_tablet_tool_v2_listener)
-#undef INTERN_CLIENT_PROXY_CONCEPT
-    template <is_proxy T> using listener_type = listener_type_holder<T>::type;
-    template <class T>
-    concept is_proxy_observable = is_proxy<T> && !std::is_same_v<std::monostate, listener_type<T>>;
-
-    namespace internals
-    {
-        template <class T> struct member_pointer_traits;
-        template <class R, class T>
-        struct member_pointer_traits<R T::*> {
-            using class_pointer_type = T;
-            using class_type = std::remove_pointer_t<T>;
-            using member_type = R;
-        };
-        template <class T> struct listener_callback_traits;
-        template <class... Rest>
-        struct listener_callback_traits<void (*)(void*, Rest...)> {
-            using return_type = void;
-            static constexpr std::size_t rest_arity = sizeof...(Rest);
-            static constexpr std::size_t arity = 1 + rest_arity;
-            using rest_args_tuple = std::tuple<Rest...>;
-            using args_tuple = std::tuple<void*, Rest...>;
-            template <std::size_t N> using rest_arg_t = std::tuple_element_t<N, rest_args_tuple>;
-            template <std::size_t N> using arg_t = std::tuple_element_t<N, args_tuple>;
-        };
-    }
-    template <auto Member> requires (std::is_member_pointer_v<decltype (Member)>)
-    using listener_member_pointer_traits = internals::member_pointer_traits<decltype (Member)>;
-    template <auto Member>
-    using listener_callback_class = typename listener_member_pointer_traits<Member>::class_type;
-    template <auto Member>
-    using listener_callback_traits = internals::listener_callback_traits<
-        typename listener_member_pointer_traits<Member>::member_type>;
-    template <auto Member>
-    using listener_callback_rest_args_tuple = typename listener_callback_traits<Member>::rest_args_tuple;
-
-    template <is_proxy T>
-    void proxy_deleter(T* raw) noexcept {
-        MVLL_CHECK(raw);
-        wl_proxy_destroy(reinterpret_cast<wl_proxy*>(raw));
-    }
-    template <>
-    void proxy_deleter<wl_display>(wl_display* raw) noexcept {
-        MVLL_CHECK(raw);
-        wl_display_disconnect(raw);
-    }
+    template <is_proxy T> constexpr inline wl_interface const *const interface_ptr =
+        dispatch_by_id(identifier<T>, []<class U>(){
+            return metadb[static_cast<std::size_t>(identifier<T>)].interface_ptr;
+        });
+    template <is_proxy T> constexpr inline std::string_view interface_name =
+        dispatch_by_id(identifier<T>, []<class U>(){
+            return metadb[static_cast<std::size_t>(identifier<T>)].name;
+        });
 
     namespace internals
     {
@@ -162,7 +104,7 @@ namespace mvll::inline wayland::inline client
         Func func;
         action(Func&& func) : func{std::forward<Func>(func)} {}
         virtual void push(void const* src) const override {
-            using rest_args_tuple = listener_callback_rest_args_tuple<Member>;
+            using rest_args_tuple = event_traits<Member>::rest_args_tuple;
             auto const& rest_args = *static_cast<rest_args_tuple const*>(src);
             if constexpr (requires {this->func(rest_args);}) {
                 this->func(rest_args);
@@ -174,7 +116,7 @@ namespace mvll::inline wayland::inline client
     };
     template <auto Member>
     struct fiblet final : listener_thunk {
-        using rest_args_tuple = listener_callback_rest_args_tuple<Member>;
+        using rest_args_tuple = event_traits<Member>::rest_args_tuple;
         struct promise_type;
         using handle_type = std::coroutine_handle<promise_type>;
         handle_type handle;
@@ -236,12 +178,22 @@ namespace mvll::inline wayland::inline client
         }
     };
 
+    template <class Func, class Tuple>
+    struct action_invocable_traits {
+        static inline constexpr bool value = []<class... Args>(std::tuple<Args...>*) {
+            return std::is_invocable_v<Func, Args...>;
+        }((Tuple*)nullptr);
+    };
+    template <class Func, class Tuple>
+    inline constexpr bool action_invocable_traits_v = action_invocable_traits<Func, Tuple>::value;
+
     template <is_proxy T>
-    class proxy_impl : public internals::move_only_pointer<T, proxy_deleter<T>> {
+    class proxy_impl : public internals::move_only_pointer<T, delete_proxy<T>> {
     public:
-        using base_type = internals::move_only_pointer<T, proxy_deleter<T>>;
-        static constexpr auto interface_ptr = mvll::interface_ptr<T>;
-        static inline std::string_view interface_name = mvll::interface_name<T>;
+        using base_type = internals::move_only_pointer<T, delete_proxy<T>>;
+        static inline constexpr auto metainfo = metadb[static_cast<std::size_t>(identifier<T>)];
+        static inline constexpr auto interface_ptr = metainfo.interface_ptr;
+        static inline constexpr auto interface_name = metainfo.name;
 
     public:
         using base_type::base_type;
@@ -265,7 +217,7 @@ namespace mvll::inline wayland::inline client
     template <is_proxy_observable T>
     class thunk_table final {
     public:
-        static constexpr std::size_t SIZE = sizeof (listener_type<T>) / sizeof (void*);
+        static inline constexpr std::size_t SIZE = sizeof (listener_type<T>) / sizeof (void*);
         using table_type = std::array<internals::move_only_pointer<listener_thunk>, SIZE>;
 
     private:
@@ -295,7 +247,7 @@ namespace mvll::inline wayland::inline client
 
         template <auto Member> //!!!
         void add(listener_thunk* raw) noexcept {
-            static std::size_t ordinal = std::bit_cast<std::size_t>(Member) / sizeof (void*);
+            constexpr std::size_t ordinal = event_traits<Member>::ordinal;
             (*table_.get())[ordinal].reset(raw);
         }
 
@@ -335,12 +287,12 @@ namespace mvll::inline wayland::inline client
     public:
         template <class> struct fiblet_traits;
         template <auto Member> requires std::is_same_v<listener_type<T>,
-                                                       listener_callback_class<Member>>
+                                                       typename event_traits<Member>::listener_type>
         struct fiblet_traits<fiblet<Member>> {
             static constexpr auto member = Member;
         };
         template <class Func>
-        static constexpr auto get_member_v = fiblet_traits<std::invoke_result_t<Func>>::member;
+        static inline constexpr auto get_member_v = fiblet_traits<std::invoke_result_t<Func>>::member;
         template <class Func, class... InitialArgs>
         void on(Func&& coro, InitialArgs&&... init) {
             constexpr auto Member = get_member_v<Func>;
@@ -376,6 +328,8 @@ namespace mvll::inline wayland::inline client
     }
 
 } // ::mvll
+
+#include <iostream>
 
 int main(int, char** argv) {
     using namespace mvll;
@@ -454,10 +408,23 @@ int main(int, char** argv) {
                     if (!touch) {
                         touch = proxy{wl_seat_get_touch(seat)};
                     }
-                    touch.on([] -> fiblet<&wl_touch_listener::motion> {
-                        for (;;) {
-                            [[maybe_unused]] auto const& args = co_await wait_current_args{};
-                        }
+                    std::array<mvll::versor<wl_fixed_t, 2>, 10> currents{};
+                    touch.on<&wl_touch_listener::down>([&](wl_touch*,
+                                                           std::uint32_t,
+                                                           std::uint32_t,
+                                                           wl_surface*,
+                                                           std::int32_t id,
+                                                           wl_fixed_t x,
+                                                           wl_fixed_t y) noexcept {
+                        currents[id] = {x, y};
+                    });
+
+                    touch.on<&wl_touch_listener::motion>([&](wl_touch*,
+                                                             std::uint32_t,
+                                                             std::int32_t id,
+                                                             wl_fixed_t x,
+                                                             wl_fixed_t y) noexcept {
+                        currents[id] = {x, y};
                     });
                 }
                 else {

@@ -124,7 +124,7 @@ namespace mvll::inline wayland::inline client
         MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_LISTENER)
 #undef MVLL_INTERN_PROXY_LISTENER
     }
-    template <class T> concept is_proxy_observable = requires {
+    template <class T> concept is_proxy_observable = is_proxy<T> && requires {
         typename internals::proxy_to_listener_impl<T>::type;
     };
 
@@ -133,13 +133,13 @@ namespace mvll::inline wayland::inline client
         typename internals::listener_to_proxy_impl<L>::type;
     };
 
-    template <class T> inline void (*delete_proxy)(T*) = nullptr;
-    template <> inline void (*delete_proxy<wl_display>)(wl_display*) = wl_display_disconnect;
-    template <is_proxy T> inline void (*delete_proxy<T>)(T*) noexcept = [](T* raw) noexcept {
+    template <class T> constexpr inline void (*delete_proxy)(T*) = nullptr;
+    template <> constexpr inline void (*delete_proxy<wl_display>)(wl_display*) = wl_display_disconnect;
+    template <is_proxy T> constexpr inline void (*delete_proxy<T>)(T*) noexcept = [](T* raw) noexcept {
         wl_proxy_destroy(reinterpret_cast<wl_proxy*>(raw));
     };
     template <is_proxy_observable T>
-    inline int add_listener(T* raw, listener_type<T> const* listener, void* data) noexcept {
+    constexpr inline int add_listener(T* raw, listener_type<T> const* listener, void* data) noexcept {
         return wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(raw),
                                      reinterpret_cast<void (**)(void)>(
                                          const_cast<listener_type<T>*>(listener)),
