@@ -14,6 +14,7 @@
 #include <mvll/platform/linux.hpp>
 #include <mvll/unique.hpp>
 #include <mvll/versor.hpp>
+#include <mvll/fiblet.hpp>
 
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
@@ -91,7 +92,6 @@ namespace mvll::inline wayland::inline client
             T* ptr_;
         };
     } // ::inernals
-    struct wait_current_args {};
     struct listener_thunk {
         virtual ~listener_thunk() noexcept = default;
         virtual void push(void const* src) const = 0;
@@ -100,9 +100,9 @@ namespace mvll::inline wayland::inline client
         listener_thunk& operator=(listener_thunk const&) = delete;
     };
     template <auto Member, class Func>
-    struct action final : listener_thunk {
+    struct listener_action final : listener_thunk {
         Func func;
-        action(Func&& func) : func{std::forward<Func>(func)} {}
+        listener_action(Func&& func) : func{std::forward<Func>(func)} {}
         virtual void push(void const* src) const override {
             using rest_args_tuple = event_traits<Member>::rest_args_tuple;
             auto const& rest_args = *static_cast<rest_args_tuple const*>(src);
@@ -115,67 +115,30 @@ namespace mvll::inline wayland::inline client
         }
     };
     template <auto Member>
-    struct fiblet final : listener_thunk {
+    struct listener_fiblet final
+        : listener_thunk
+        , fiblet_base
+    {
         using rest_args_tuple = event_traits<Member>::rest_args_tuple;
-        struct promise_type;
-        using handle_type = std::coroutine_handle<promise_type>;
-        handle_type handle;
-        struct promise_type {
-            rest_args_tuple const* current;
-            std::exception_ptr exception = nullptr;
-            std::coroutine_handle<> previous = nullptr;
-            auto get_return_object() noexcept {
-                return fiblet{handle_type::from_promise(*this)};
+        struct promise_type : fiblet_base::promise_type {
+            listener_fiblet get_return_object() noexcept {
+                return listener_fiblet{handle_type::from_promise(*this)};
             }
-            void unhandled_exception() {
-                this->exception = std::current_exception();
-            }
-            void return_void() const noexcept {}
-            std::suspend_never initial_suspend() const noexcept { return {}; }
-            auto final_suspend() const noexcept {
-                struct final_awaiter {
-                    bool await_ready() const noexcept { return false; }
-                    void await_resume() const noexcept {}
-                    std::coroutine_handle<> await_suspend(handle_type h) noexcept {
-                        if (auto previous = h.promise().previous) return previous;
-                        return std::noop_coroutine();
+            auto await_transform(wait_current_tag) noexcept {
+                struct typed_awaiter : event_awaiter {
+                    rest_args_tuple const& await_resume() const noexcept {
+                        return *static_cast<rest_args_tuple const*>(this->self.input_);
                     }
                 };
-                return final_awaiter{};
-            }
-            struct event_awaiter {
-                promise_type& self;
-                bool await_ready() const noexcept { return false; }
-                void await_suspend(std::coroutine_handle<>) const noexcept {}
-                rest_args_tuple const& await_resume() const noexcept { return *self.current; }
-            };
-            auto await_transform(wait_current_args) noexcept {
-                return event_awaiter{*this};
+                return typed_awaiter{{*this}};
             }
         };
+        void push(void const* input) const override {
+            fiblet_base::push(input);
+        }
 
     private:
-        explicit fiblet(handle_type h) : handle{h} {}
-
-    public:
-        fiblet& operator=(fiblet&& other) noexcept {
-            if (this != &other) {
-                if (handle) handle.destroy();
-                handle = std::exchange(other.handle, nullptr);
-            }
-            return *this;
-        }
-        ~fiblet() noexcept {
-            if (handle) {
-                handle.destroy();
-            }
-        }
-        void push(void const* update) const override {
-            MVLL_CHECK(handle);
-            MVLL_CHECK(!handle.done());
-            handle.promise().current = static_cast<rest_args_tuple const*>(update);
-            handle.resume();
-        }
+        using fiblet_base::fiblet_base;
     };
 
     template <class Func, class Tuple>
@@ -288,7 +251,7 @@ namespace mvll::inline wayland::inline client
         template <class> struct fiblet_traits;
         template <auto Member> requires std::is_same_v<listener_type<T>,
                                                        typename event_traits<Member>::listener_type>
-        struct fiblet_traits<fiblet<Member>> {
+        struct fiblet_traits<listener_fiblet<Member>> {
             static constexpr auto member = Member;
         };
         template <class Func>
@@ -296,12 +259,12 @@ namespace mvll::inline wayland::inline client
         template <class Func, class... InitialArgs>
         void on(Func&& coro, InitialArgs&&... init) {
             constexpr auto Member = get_member_v<Func>;
-            table_.template add<Member>(new fiblet<Member>{coro(std::forward<InitialArgs>(init)...)});
+            table_.template add<Member>(new listener_fiblet<Member>{coro(std::forward<InitialArgs>(init)...)});
         }
         template <auto Member, class Func>
         void on(Func&& func) {
             using DecayFunc = std::decay_t<Func>;
-            table_.template add<Member>(new action<Member, DecayFunc>{std::forward<DecayFunc>(func)});
+            table_.template add<Member>(new listener_action<Member, DecayFunc>{std::forward<DecayFunc>(func)});
         }
 
     private:
@@ -362,29 +325,29 @@ int main(int, char** argv) {
     wl_display_roundtrip(display);
 
     for (auto& seat : seats) {
-        seat.on([&seat] -> fiblet<&wl_seat_listener::capabilities> {
+        seat.on([&seat] -> listener_fiblet<&wl_seat_listener::capabilities> {
             proxy<wl_keyboard> keyboard;
             proxy<wl_pointer> pointer;
             proxy<wl_touch> touch;
             for (;;) {
-                [[maybe_unused]] auto const& [s, caps] = co_await wait_current_args{};
+                [[maybe_unused]] auto const& [s, caps] = co_await wait_current;
                 if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
                     if (!keyboard) {
                         keyboard = proxy{wl_seat_get_keyboard(seat)};
                     }
-                    keyboard.on([] -> fiblet<&wl_keyboard_listener::key> {
+                    keyboard.on([] -> listener_fiblet<&wl_keyboard_listener::key> {
                         for (;;) {
-                            [[maybe_unused]] auto const& args = co_await wait_current_args{};
+                            [[maybe_unused]] auto const& args = co_await wait_current;
                         }
                     });
-                    keyboard.on([] -> fiblet<&wl_keyboard_listener::modifiers> {
+                    keyboard.on([] -> listener_fiblet<&wl_keyboard_listener::modifiers> {
                         for (;;) {
-                            [[maybe_unused]] auto const& args = co_await wait_current_args{};
+                            [[maybe_unused]] auto const& args = co_await wait_current;
                         }
                     });
-                    keyboard.on([] -> fiblet<&wl_keyboard_listener::repeat_info> {
+                    keyboard.on([] -> listener_fiblet<&wl_keyboard_listener::repeat_info> {
                         for (;;) {
-                            [[maybe_unused]] auto const& args = co_await wait_current_args{};
+                            [[maybe_unused]] auto const& args = co_await wait_current;
                         }
                     });
                 }
@@ -395,9 +358,9 @@ int main(int, char** argv) {
                     if (!pointer) {
                         pointer = proxy{wl_seat_get_pointer(seat)};
                     }
-                    pointer.on([] -> fiblet<&wl_pointer_listener::axis_value120> {
+                    pointer.on([] -> listener_fiblet<&wl_pointer_listener::axis_value120> {
                         for (;;) {
-                            [[maybe_unused]] auto const& args = co_await wait_current_args{};
+                            [[maybe_unused]] auto const& args = co_await wait_current;
                         }
                     });
                 }
@@ -408,7 +371,11 @@ int main(int, char** argv) {
                     if (!touch) {
                         touch = proxy{wl_seat_get_touch(seat)};
                     }
-                    std::array<mvll::versor<wl_fixed_t, 2>, 10> currents{};
+                    struct stroke {
+                        std::int32_t id;
+                        fiblet<versor<wl_fixed_t, 2>> coro;
+                    };
+                    std::forward_list<stroke> strokes;
                     touch.on<&wl_touch_listener::down>([&](wl_touch*,
                                                            std::uint32_t,
                                                            std::uint32_t,
@@ -416,15 +383,31 @@ int main(int, char** argv) {
                                                            std::int32_t id,
                                                            wl_fixed_t x,
                                                            wl_fixed_t y) noexcept {
-                        currents[id] = {x, y};
+                        strokes.emplace_front(stroke {
+                                id,
+                                [&]() -> fiblet<versor<wl_fixed_t, 2>> {
+                                    for (;;) {
+                                        auto ret = co_yield nullptr;
+                                        std::cout << ret << std::endl;
+                                    }
+                                }(),
+                            });
+                        std::cout << "start stroke #" << id << std::endl;
+                        versor<wl_fixed_t, 2> cur{x, y};
+                        strokes.front().coro.push(&cur);
                     });
-
+                    touch.on<&wl_touch_listener::up>([&](wl_touch*,
+                                                         std::uint32_t,
+                                                         std::uint32_t,
+                                                         std::int32_t id) noexcept {
+                        std::erase_if(strokes, [id](auto const& s) { return s.id == id; });
+                        std::cout << "remove stroke #" << id << std::endl;
+                    });
                     touch.on<&wl_touch_listener::motion>([&](wl_touch*,
                                                              std::uint32_t,
                                                              std::int32_t id,
                                                              wl_fixed_t x,
                                                              wl_fixed_t y) noexcept {
-                        currents[id] = {x, y};
                     });
                 }
                 else {
@@ -448,7 +431,7 @@ int main(int, char** argv) {
     });
 
     auto toplevel = proxy{xdg_surface_get_toplevel(xsurface)};
-    toplevel.on([&] MVLL_NOEXCEPT -> fiblet<&xdg_toplevel_listener::configure> {
+    toplevel.on([&] MVLL_NOEXCEPT -> listener_fiblet<&xdg_toplevel_listener::configure> {
         std::size_t scale = 1;
         std::size_t cx = 640 * scale;
         std::size_t cy = 480 * scale;
@@ -465,7 +448,7 @@ int main(int, char** argv) {
         // auto que = sycl::queue();
         // std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
         for (;;) {
-            auto const& args = co_await wait_current_args{};
+            auto const& args = co_await wait_current;
             auto const& [toplevel, h, w, states] = args;
             cx = h * scale;
             cy = w * scale;

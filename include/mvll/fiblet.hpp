@@ -15,8 +15,7 @@ namespace mvll
         struct promise_type;
         using handle_type = std::coroutine_handle<promise_type>;
         struct promise_type {
-            void const* input_ = nullptr;
-            void const* output_ = nullptr;
+            void const* current_ = nullptr;
             std::coroutine_handle<> continuation = nullptr;
             fiblet_base get_return_object() noexcept {
                 return fiblet_base{handle_type::from_promise(*this)};
@@ -49,17 +48,17 @@ namespace mvll
                     }
                     return std::noop_coroutine();                    
                 }
-                void const* await_resume() const noexcept { return self.input_; }
+                void const* await_resume() const noexcept { return self.current_; }
             };
             auto await_transform(wait_current_tag) const noexcept {
                 return event_awaiter{*this};
             }
             auto yield_value(void const* yielded_val) noexcept {
-                this->output_ = yielded_val;
+                this->current_ = yielded_val;
                 struct yield_awaiter {
                     promise_type& self;
                     bool await_ready() const noexcept { return false; }
-                    void const* await_resume() noexcept { return self.input_; }
+                    void const* await_resume() noexcept { return self.current_; }
                     std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept {
                         if (self.continuation) return self.continuation;
                         return std::noop_coroutine();
@@ -76,9 +75,9 @@ namespace mvll
             this->handle_.promise().continuation = next.handle_;
         }
 
-        void push(void const* input) const {
+        void push(void const* update) const {
             if (handle_ && !handle_.done()) {
-                handle_.promise().input_ = input;
+                handle_.promise().current_ = update;
                 handle_.resume();
             }
         }
@@ -115,7 +114,7 @@ namespace mvll
             auto await_transform(wait_current_tag) noexcept {
                 struct typed_awaiter : event_awaiter {
                     T const& await_resume() const noexcept {
-                        return *static_cast<T const*>(this->self.input_);
+                        return *static_cast<T const*>(this->self.current_);
                     }
                 };
                 return typed_awaiter{{*this}};
