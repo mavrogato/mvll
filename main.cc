@@ -42,45 +42,6 @@ namespace mvll::inline wayland::inline client
             }
             return std::forward<T>(t);
         }
-
-        template <class T, void DELETER(T*) = nullptr>
-        class move_only_pointer {
-            constexpr move_only_pointer(T const&) = delete;
-            constexpr move_only_pointer& operator=(T const&) = delete;
-            static void deleter(T* raw) noexcept {
-                if constexpr (DELETER != nullptr) {
-                    DELETER(raw);
-                }
-                else {
-                    delete raw; // delete[] not supported!
-                }
-            }
-
-        public:
-            constexpr move_only_pointer(T* raw = nullptr) noexcept : ptr_{raw} {}
-            constexpr move_only_pointer(move_only_pointer&& other) noexcept
-                : ptr_{std::exchange(other.ptr_, nullptr)}
-                {}
-            constexpr move_only_pointer& operator=(move_only_pointer&& other) noexcept {
-                reset(std::exchange(other.ptr_, nullptr));
-                return *this;
-            }
-            constexpr void reset(T* raw = nullptr) noexcept {
-                if (auto old = std::exchange(this->ptr_, raw)) {
-                    if (old != this->ptr_) {
-                        deleter(old);
-                    }
-                }
-            }
-            constexpr ~move_only_pointer() noexcept { reset(); }
-            constexpr auto operator<=>(move_only_pointer const&) const noexcept = default;
-            constexpr T* get() const noexcept { return this->ptr_; }
-            constexpr operator T*() const noexcept { return this->get(); }
-            constexpr explicit operator bool() const noexcept { return this->get() != nullptr; }
-
-        private:
-            T* ptr_;
-        };
     } // ::inernals
     struct listener_thunk {
         virtual ~listener_thunk() noexcept = default;
@@ -126,18 +87,29 @@ namespace mvll::inline wayland::inline client
     inline constexpr bool action_invocable_traits_v = action_invocable_traits<Func, Tuple>::value;
 
     template <is_proxy T>
-    class proxy_impl : public internals::move_only_pointer<T, delete_proxy<T>> {
+    class proxy_impl {
     public:
-        using base_type = internals::move_only_pointer<T, delete_proxy<T>>;
         static inline constexpr auto metainfo = metadb[static_cast<std::size_t>(identifier<T>)];
         static inline constexpr auto interface_ptr = mvll::interface_ptr<T>;
         static inline constexpr auto interface_name = mvll::interface_name<T>;
 
     public:
-        using base_type::base_type;
+        proxy_impl(T* raw = nullptr) noexcept : ptr_{raw, delete_proxy<T>} {}
+        proxy_impl(proxy_impl&& other) noexcept
+            : ptr_{other.ptr_.release(), delete_proxy<T>} {}
+
+        proxy_impl& operator=(proxy_impl&& other) noexcept {
+            this->ptr_.reset(other.ptr_.release());
+            return *this;
+        }
 
     public:
+        void reset(T* raw = nullptr) noexcept { this->ptr_.reset(raw); }
+        T* get() const noexcept { return this->ptr_.get(); }
+        operator T*() const noexcept { return this->get(); }
+        explicit operator bool() const noexcept { return this->ptr_.operator bool(); }
         std::uint32_t id() const noexcept {
+            MVLL_CHECK(this->operator bool());
             return wl_proxy_get_id(reinterpret_cast<wl_proxy*>(this->get()));
         }
 
@@ -147,6 +119,9 @@ namespace mvll::inline wayland::inline client
                                                       proxy_impl const& x) {
             return output << std::tuple{interface_name, x.id(), x.get()};
         }
+
+    private:
+        unique_pointer<T> ptr_;
     };
 
     template <is_proxy_observable T>
@@ -200,13 +175,13 @@ namespace mvll::inline wayland::inline client
     template <is_proxy_observable T>
     class proxy<T> : public proxy_impl<T> {
     public:
-        proxy()
-            : proxy_impl<T>::proxy_impl{}
+        proxy(std::nullptr_t = nullptr)
+            : proxy_impl<T>{}
             , table_{}
             {
             }
         proxy(T* raw)
-            : proxy_impl<T>::proxy_impl{raw}
+            : proxy_impl<T>{raw}
             , table_{}
             {
                 MVLL_CHECK(-1 != table_.start(this->get()));
