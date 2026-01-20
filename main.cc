@@ -3,7 +3,6 @@
 
 #include <array>
 #include <coroutine>
-#include <exception>
 #include <filesystem>
 #include <forward_list>
 #include <tuple>
@@ -11,10 +10,10 @@
 
 #include <mvll/cpp2x/generator.hpp>
 #include <mvll/cpp2x/tuple-support.hpp>
+#include <mvll/fiblet.hpp>
 #include <mvll/platform/linux.hpp>
 #include <mvll/unique.hpp>
 #include <mvll/versor.hpp>
-#include <mvll/fiblet.hpp>
 
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
@@ -34,15 +33,6 @@
 
 namespace mvll::inline wayland::inline client
 {
-    template <is_proxy T> constexpr inline wl_interface const *const interface_ptr =
-        dispatch_by_id(identifier<T>, []<class U>(){
-            return metadb[static_cast<std::size_t>(identifier<T>)].interface_ptr;
-        });
-    template <is_proxy T> constexpr inline std::string_view interface_name =
-        dispatch_by_id(identifier<T>, []<class U>(){
-            return metadb[static_cast<std::size_t>(identifier<T>)].name;
-        });
-
     namespace internals
     {
         template <class T>
@@ -117,28 +107,13 @@ namespace mvll::inline wayland::inline client
     template <auto Member>
     struct listener_fiblet final
         : listener_thunk
-        , fiblet_base
+        , fiblet<typename event_traits<Member>::rest_args_tuple>
     {
-        using rest_args_tuple = event_traits<Member>::rest_args_tuple;
-        struct promise_type : fiblet_base::promise_type {
-            listener_fiblet get_return_object() noexcept {
-                return listener_fiblet{handle_type::from_promise(*this)};
-            }
-            auto await_transform(wait_current_tag) noexcept {
-                struct typed_awaiter : event_awaiter {
-                    rest_args_tuple const& await_resume() const noexcept {
-                        return *static_cast<rest_args_tuple const*>(this->self.input_);
-                    }
-                };
-                return typed_awaiter{{*this}};
-            }
-        };
+        using fiblet_type = fiblet<typename event_traits<Member>::rest_args_tuple>;
+        using fiblet_type::fiblet_type;
         void push(void const* input) const override {
             fiblet_base::push(input);
         }
-
-    private:
-        using fiblet_base::fiblet_base;
     };
 
     template <class Func, class Tuple>
@@ -155,8 +130,8 @@ namespace mvll::inline wayland::inline client
     public:
         using base_type = internals::move_only_pointer<T, delete_proxy<T>>;
         static inline constexpr auto metainfo = metadb[static_cast<std::size_t>(identifier<T>)];
-        static inline constexpr auto interface_ptr = metainfo.interface_ptr;
-        static inline constexpr auto interface_name = metainfo.name;
+        static inline constexpr auto interface_ptr = mvll::interface_ptr<T>;
+        static inline constexpr auto interface_name = mvll::interface_name<T>;
 
     public:
         using base_type::base_type;
@@ -165,15 +140,12 @@ namespace mvll::inline wayland::inline client
         std::uint32_t id() const noexcept {
             return wl_proxy_get_id(reinterpret_cast<wl_proxy*>(this->get()));
         }
-        std::string_view name() const noexcept {
-            return interface_name;
-        }
 
     public:
         template <class Ch, class Tr>
-        friend constexpr std::basic_ostream<Ch, Tr>& operator<<(std::basic_ostream<Ch, Tr>& output,
-                                                                proxy_impl const& x) {
-            return output << std::tuple{x.name(), x.id(), x.get()};
+        friend std::basic_ostream<Ch, Tr>& operator<<(std::basic_ostream<Ch, Tr>& output,
+                                                      proxy_impl const& x) {
+            return output << std::tuple{interface_name, x.id(), x.get()};
         }
     };
 
@@ -181,7 +153,7 @@ namespace mvll::inline wayland::inline client
     class thunk_table final {
     public:
         static inline constexpr std::size_t SIZE = sizeof (listener_type<T>) / sizeof (void*);
-        using table_type = std::array<internals::move_only_pointer<listener_thunk>, SIZE>;
+        using table_type = std::array<std::unique_ptr<listener_thunk>, SIZE>;
 
     private:
         static inline listener_type<T> listener = []<std::size_t ...I>(std::index_sequence<I...>) noexcept {
@@ -215,7 +187,7 @@ namespace mvll::inline wayland::inline client
         }
 
     private:
-        internals::move_only_pointer<table_type> table_;
+        std::unique_ptr<table_type> table_;
     };
 
     template <class> class proxy;
@@ -290,7 +262,24 @@ namespace mvll::inline wayland::inline client
         return std::tuple{std::move(fd), std::move(buffer), std::move(data)};
     }
 
-} // ::mvll
+} // namespace mvll::inline wayland::inline client
+
+namespace std
+{
+    template <auto Member, class ...Args>
+    struct coroutine_traits<mvll::listener_fiblet<Member>, Args...>
+         : coroutine_traits<mvll::fiblet<typename mvll::event_traits<Member>::rest_args_tuple>, Args...> {
+         using base_traits = coroutine_traits<
+             mvll::fiblet<typename mvll::event_traits<Member>::rest_args_tuple>, Args...>;
+         struct promise_type : base_traits::promise_type {
+             mvll::listener_fiblet<Member> get_return_object() noexcept {
+                return mvll::listener_fiblet<Member> {
+                    std::coroutine_handle<promise_type>::from_promise(*this),
+                };
+            }
+        };
+    };
+}
 
 #include <iostream>
 
@@ -403,12 +392,12 @@ int main(int, char** argv) {
                         std::erase_if(strokes, [id](auto const& s) { return s.id == id; });
                         std::cout << "remove stroke #" << id << std::endl;
                     });
-                    touch.on<&wl_touch_listener::motion>([&](wl_touch*,
-                                                             std::uint32_t,
-                                                             std::int32_t id,
-                                                             wl_fixed_t x,
-                                                             wl_fixed_t y) noexcept {
-                    });
+                    // touch.on<&wl_touch_listener::motion>([&](wl_touch*,
+                    //                                          std::uint32_t,
+                    //                                          std::int32_t id,
+                    //                                          wl_fixed_t x,
+                    //                                          wl_fixed_t y) noexcept {
+                    // });
                 }
                 else {
                     touch = {};

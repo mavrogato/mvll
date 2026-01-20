@@ -52,7 +52,8 @@ namespace mvll::inline cpp2x
             T x;
             constexpr quote(T x) : x{x} {}
             template <class Ch, class Tr>
-            constexpr friend auto& operator<<(std::basic_ostream<Ch, Tr>& output, quote const& q) {
+            constexpr friend std::basic_ostream<Ch, Tr>& operator<<(std::basic_ostream<Ch, Tr>& output,
+                                                                    quote const& q) {
                 if constexpr (std::is_pointer_v<std::decay_t<T>>) {
                     if (q.x == nullptr) {
                         return output << "nil";
@@ -98,7 +99,7 @@ namespace mvll::inline cpp2x
      * Output format is a lisp s-expression likes: (element1 element2 ...).
      */
     template <class Ch, class Tr, mvll::tuple_like T>
-    constexpr auto& operator<<(std::basic_ostream<Ch, Tr>& output, T const& t) {
+    constexpr std::basic_ostream<Ch, Tr>& operator<<(std::basic_ostream<Ch, Tr>& output, T const& t) {
         output.put(Ch{'('});
         [&]<std::size_t... I>(std::index_sequence<I...>) {
             using std::get;

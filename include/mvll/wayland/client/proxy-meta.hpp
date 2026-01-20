@@ -2,6 +2,7 @@
 #define INCLUDE_MVLL_WAYLAND_CLIENT_PROXY_META_HPP
 
 #include <array>
+#include <memory>
 
 #include <cstddef>
 #include <cstdint>
@@ -133,11 +134,27 @@ namespace mvll::inline wayland::inline client
         typename internals::listener_to_proxy_impl<L>::type;
     };
 
+    template <is_proxy T> constexpr inline wl_interface const *const interface_ptr = nullptr;
+#define MVLL_INTERN_PROXY_INTERFACE(CLASS, ATTR)                         \
+    template <> constexpr inline wl_interface const *const interface_ptr<CLASS> = &CLASS##_interface;
+    MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_INTERFACE)
+#undef MVLL_INTERN_PROXY_INTERFACE
+
+    template <is_proxy T> constexpr inline std::string_view interface_name = "unknown";
+#define MVLL_INTERN_PROXY_NAME(CLASS, ATTR)             \
+    template <> constexpr inline std::string_view interface_name<CLASS> = #CLASS;
+    MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_NAME)
+#undef MVLL_INTERN_PROXY_NAME
+
     template <class T> constexpr inline void (*delete_proxy)(T*) = nullptr;
     template <> constexpr inline void (*delete_proxy<wl_display>)(wl_display*) = wl_display_disconnect;
     template <is_proxy T> constexpr inline void (*delete_proxy<T>)(T*) noexcept = [](T* raw) noexcept {
         wl_proxy_destroy(reinterpret_cast<wl_proxy*>(raw));
     };
+    template <is_proxy T> using unique_pointer = std::unique_ptr<T, decltype (delete_proxy<T>)>;
+    template <is_proxy T> unique_pointer<T> make_unique(T* raw = nullptr) noexcept {
+        return unique_pointer<T>{raw, delete_proxy<T>};
+    }
     template <is_proxy_observable T>
     constexpr inline int add_listener(T* raw, listener_type<T> const* listener, void* data) noexcept {
         return wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(raw),

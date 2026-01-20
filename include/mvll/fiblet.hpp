@@ -68,22 +68,24 @@ namespace mvll
             }
         };
 
+        [[deprecated]]
         void connect(fiblet_base& next) const noexcept {
-            MVLL_CHECK(handle_.promise().continuation == nullptr);
-            MVLL_CHECK(next.handle_);
-            MVLL_CHECK(!next.handle_.done());
-            this->handle_.promise().continuation = next.handle_;
+            MVLL_CHECK(handle().promise().continuation == nullptr);
+            MVLL_CHECK(next.handle());
+            MVLL_CHECK(!next.handle().done());
+            handle().promise().continuation = next.handle();
         }
 
         void push(void const* update) const {
-            if (handle_ && !handle_.done()) {
-                handle_.promise().current_ = update;
-                handle_.resume();
+            if (handle() && !handle().done()) {
+                handle().promise().current_ = update;
+                handle().resume();
             }
         }
 
     public:
         fiblet_base() = default;
+        explicit fiblet_base(std::coroutine_handle<> h) : handle_{h} {}
         fiblet_base(fiblet_base&& other) noexcept 
             : handle_(std::exchange(other.handle_, nullptr)) {}
         fiblet_base& operator=(fiblet_base&& other) noexcept {
@@ -96,37 +98,46 @@ namespace mvll
         ~fiblet_base() noexcept {
             if (handle_) {
                 handle_.destroy();
+                handle_ = nullptr;
             }
         }
-        handle_type handle() const noexcept { return handle_; }
+        handle_type handle() const noexcept {
+            return handle_type::from_address(handle_.address());
+        }
 
-    protected:
-        explicit fiblet_base(handle_type h) : handle_{h} {}
-        handle_type handle_;
+    private:
+        std::coroutine_handle<> handle_;
     };
 
     template <class T>
     struct fiblet : fiblet_base {
-        struct promise_type : fiblet_base::promise_type {
-            fiblet get_return_object() noexcept {
-                return fiblet{handle_type::from_promise(*this)};
+        using fiblet_base::fiblet_base;
+        void push(T const* input) {
+            fiblet_base::push(input);
+        }
+    };
+} // ::mvll
+
+namespace std
+{
+    template <class T, class ...Args>
+    struct coroutine_traits<mvll::fiblet<T>, Args...> {
+        struct promise_type : mvll::fiblet_base::promise_type {
+            mvll::fiblet<T> get_return_object() noexcept {
+                return mvll::fiblet<T> {
+                    std::coroutine_handle<promise_type>::from_promise(*this),
+                };
             }
-            auto await_transform(wait_current_tag) noexcept {
-                struct typed_awaiter : event_awaiter {
+            auto await_transform(mvll::wait_current_tag) noexcept {
+                struct fiblet_event_awaiter : event_awaiter {
                     T const& await_resume() const noexcept {
                         return *static_cast<T const*>(this->self.current_);
                     }
                 };
-                return typed_awaiter{{*this}};
+                return fiblet_event_awaiter{{*this}};
             }
         };
-        void push(T const* input) {
-            fiblet_base::push(input);
-        }
-
-    private:
-        using fiblet_base::fiblet_base;
     };
-} // ::mvll
+} // ::std
 
 #endif /*INCLUDE_MVLL_FIBLET_HPP*/
