@@ -1,7 +1,8 @@
 #ifndef INCLUDE_MVLL_PFR_HPP
 #define INCLUDE_MVLL_PFR_HPP
 
-#include <array>
+#include <mvll/error-handling.hpp>
+
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -19,84 +20,37 @@ namespace mvll::inline pfr
 
         template <class T> concept aggregate = std::is_aggregate_v<T>;
 
+        template <class T, std::size_t... I> auto check_aggregate_init(std::index_sequence<I...>)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+            -> decltype(T{ ((void)I, any_type{})... }, std::true_type{});
+#pragma GCC diagnostic pop
+        template <class T, std::size_t... I> std::false_type check_aggregate_init(...);
+
         template <class T, std::size_t N>
-        concept aggregate_initializable = aggregate<T> && requires {
-            []<std::size_t... I>(std::index_sequence<I...>) -> decltype (T{((void)I, any_type{})...}) {
-                return {};
-            }(std::make_index_sequence<N>{});
+        concept aggregate_initializable = requires {
+            { check_aggregate_init<T>(std::make_index_sequence<N>{}) } -> std::same_as<std::true_type>;
         };
     } // ::internals
 
-    template <class T> consteval std::uint32_t count_members() {
-        if constexpr      (internals::aggregate_initializable<T, 64>) return 64;
-        else if constexpr (internals::aggregate_initializable<T, 63>) return 63;
-        else if constexpr (internals::aggregate_initializable<T, 62>) return 62;
-        else if constexpr (internals::aggregate_initializable<T, 61>) return 61;
-        else if constexpr (internals::aggregate_initializable<T, 60>) return 60;
-        else if constexpr (internals::aggregate_initializable<T, 59>) return 59;
-        else if constexpr (internals::aggregate_initializable<T, 58>) return 58;
-        else if constexpr (internals::aggregate_initializable<T, 57>) return 57;
-        else if constexpr (internals::aggregate_initializable<T, 56>) return 56;
-        else if constexpr (internals::aggregate_initializable<T, 55>) return 55;
-        else if constexpr (internals::aggregate_initializable<T, 54>) return 54;
-        else if constexpr (internals::aggregate_initializable<T, 53>) return 53;
-        else if constexpr (internals::aggregate_initializable<T, 52>) return 52;
-        else if constexpr (internals::aggregate_initializable<T, 51>) return 51;
-        else if constexpr (internals::aggregate_initializable<T, 50>) return 50;
-        else if constexpr (internals::aggregate_initializable<T, 49>) return 49;
-        else if constexpr (internals::aggregate_initializable<T, 48>) return 48;
-        else if constexpr (internals::aggregate_initializable<T, 47>) return 47;
-        else if constexpr (internals::aggregate_initializable<T, 46>) return 46;
-        else if constexpr (internals::aggregate_initializable<T, 45>) return 45;
-        else if constexpr (internals::aggregate_initializable<T, 44>) return 44;
-        else if constexpr (internals::aggregate_initializable<T, 43>) return 43;
-        else if constexpr (internals::aggregate_initializable<T, 42>) return 42;
-        else if constexpr (internals::aggregate_initializable<T, 41>) return 41;
-        else if constexpr (internals::aggregate_initializable<T, 40>) return 40;
-        else if constexpr (internals::aggregate_initializable<T, 39>) return 39;
-        else if constexpr (internals::aggregate_initializable<T, 38>) return 38;
-        else if constexpr (internals::aggregate_initializable<T, 37>) return 37;
-        else if constexpr (internals::aggregate_initializable<T, 36>) return 36;
-        else if constexpr (internals::aggregate_initializable<T, 35>) return 35;
-        else if constexpr (internals::aggregate_initializable<T, 34>) return 34;
-        else if constexpr (internals::aggregate_initializable<T, 33>) return 33;
-        else if constexpr (internals::aggregate_initializable<T, 32>) return 32;
-        else if constexpr (internals::aggregate_initializable<T, 31>) return 31;
-        else if constexpr (internals::aggregate_initializable<T, 30>) return 30;
-        else if constexpr (internals::aggregate_initializable<T, 29>) return 29;
-        else if constexpr (internals::aggregate_initializable<T, 28>) return 28;
-        else if constexpr (internals::aggregate_initializable<T, 27>) return 27;
-        else if constexpr (internals::aggregate_initializable<T, 26>) return 26;
-        else if constexpr (internals::aggregate_initializable<T, 25>) return 25;
-        else if constexpr (internals::aggregate_initializable<T, 24>) return 24;
-        else if constexpr (internals::aggregate_initializable<T, 23>) return 23;
-        else if constexpr (internals::aggregate_initializable<T, 22>) return 22;
-        else if constexpr (internals::aggregate_initializable<T, 21>) return 21;
-        else if constexpr (internals::aggregate_initializable<T, 20>) return 20;
-        else if constexpr (internals::aggregate_initializable<T, 19>) return 19;
-        else if constexpr (internals::aggregate_initializable<T, 18>) return 18;
-        else if constexpr (internals::aggregate_initializable<T, 17>) return 17;
-        else if constexpr (internals::aggregate_initializable<T, 16>) return 16;
-        else if constexpr (internals::aggregate_initializable<T, 15>) return 15;
-        else if constexpr (internals::aggregate_initializable<T, 14>) return 14;
-        else if constexpr (internals::aggregate_initializable<T, 13>) return 13;
-        else if constexpr (internals::aggregate_initializable<T, 12>) return 12;
-        else if constexpr (internals::aggregate_initializable<T, 11>) return 11;
-        else if constexpr (internals::aggregate_initializable<T, 10>) return 10;
-        else if constexpr (internals::aggregate_initializable<T,  9>) return  9;
-        else if constexpr (internals::aggregate_initializable<T,  8>) return  8;
-        else if constexpr (internals::aggregate_initializable<T,  7>) return  7;
-        else if constexpr (internals::aggregate_initializable<T,  6>) return  6;
-        else if constexpr (internals::aggregate_initializable<T,  5>) return  5;
-        else if constexpr (internals::aggregate_initializable<T,  4>) return  4;
-        else if constexpr (internals::aggregate_initializable<T,  3>) return  3;
-        else if constexpr (internals::aggregate_initializable<T,  2>) return  2;
-        else if constexpr (internals::aggregate_initializable<T,  1>) return  1;
-        else return 0;
+    template <class T, std::size_t Min, std::size_t Max>
+    [[nodiscard]] consteval std::size_t count_members_binary() noexcept {
+        if constexpr (Min == Max) return Min;
+        else {
+            constexpr std::size_t Mid = Min + (Max - Min + 1) / 2;
+            if constexpr (internals::aggregate_initializable<T, Mid>)
+                return count_members_binary<T, Mid, Max>();
+            else
+                return count_members_binary<T, Min, Mid - 1>();
+        }
+    }
+    template <class T>
+    [[nodiscard]] consteval std::size_t count_members() noexcept {
+        return count_members_binary<T, 0, 64>();
     }
 
     template <class T>
-    constexpr auto to_tuple(T&& s) {
+    constexpr auto to_tuple(T&& s) noexcept {
         constexpr std::uint32_t count = count_members<std::decay_t<T>>();
 #define MVLL_TO_TUPLE_BRANCH(N)                                         \
         if constexpr (count == N) {                                     \
@@ -182,9 +136,9 @@ namespace mvll::inline pfr
         typename member_pointer_traits<decltype (Member)>::member_type Mark
     > requires (std::is_member_pointer_v<decltype (Member)> &&
                 std::is_aggregate_v<typename member_pointer_traits<decltype (Member)>::struct_type>)
-    consteval std::uint32_t get_ordinal() {
+    [[nodiscard]] consteval std::uint32_t get_ordinal() noexcept {
         using struct_type = typename member_pointer_traits<decltype (Member)>::struct_type;
-        constexpr struct_type prototype = []() {
+        constexpr struct_type prototype = []() consteval {
             struct_type t{};
             t.*Member = Mark;
             return t;
@@ -194,7 +148,7 @@ namespace mvll::inline pfr
         std::size_t found_index = 0;
         bool found = false;
         (void) ((args != nullptr ? (found = true, found_index = index, true) : (++index, false)) || ...);
-        if (!found) throw "Member not found";
+        MVLL_CHECK(found);
         return found_index;
     }
 
@@ -202,7 +156,7 @@ namespace mvll::inline pfr
         typename member_pointer_traits<decltype (Member)>::member_type Mark
     > requires (std::is_member_pointer_v<decltype (Member)> &&
                 std::is_aggregate_v<typename member_pointer_traits<decltype (Member)>::struct_type>)
-    inline constexpr std::uint32_t ordinal = [] noexcept {
+    inline constexpr std::uint32_t ordinal = [] consteval noexcept {
         return get_ordinal<Member, Mark>();
     }();
 

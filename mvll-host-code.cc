@@ -14,7 +14,6 @@
 #include <mvll/cpp2x/tuple-support.hpp>
 #include <mvll/cpp2x/generator.hpp>
 #include <mvll/error-handling.hpp>
-#include <mvll/unique.hpp>
 #include <mvll/platform/linux.hpp>
 
 #include <wp-fractional-scale-v1-client.h>
@@ -26,6 +25,7 @@
 // #include "zwp-linux-dmabuf-v1-client.h"
 // #include "wp-fractional-scale-v1-client.h"
 
+#if 0
 using mvll::cpp2x::operator<<;
 
 int display_run() MVLL_NOEXCEPT {
@@ -98,6 +98,7 @@ int display_run() MVLL_NOEXCEPT {
 
     return 0;
 }
+#endif
 
 #if 0
 enum class context : std::uint32_t {

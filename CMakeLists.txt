@@ -98,13 +98,16 @@ add_executable(mvll-test
   mvll-test.cc
   test/pfr-test.cc
   test/fiblet-test.cc
-  test/unique-test.cc
   test/generator-test.cc
   test/channel-test.cc
   test/reflector-test.cc
   test/proxy-meta-test.cc
   test/proxy-wrapper-test.cc
 )
+
+#set_source_files_properties(test/fiblet-test.cc PROPERTIES COMPILE_FLAGS "-O1")
+#set_source_files_properties(main.cc PROPERTIES COMPILE_FLAGS "-O1")
+
 target_compile_definitions(mvll PRIVATE
   HERSHEY_FONTS_DIR="${HERSHEY_DATA_DIR}"
 )

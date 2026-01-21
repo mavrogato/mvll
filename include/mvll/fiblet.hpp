@@ -68,8 +68,7 @@ namespace mvll
             }
         };
 
-        [[deprecated]]
-        void connect(fiblet_base& next) const noexcept {
+        [[deprecated]] void connect(fiblet_base& next) const noexcept {
             MVLL_CHECK(handle().promise().continuation == nullptr);
             MVLL_CHECK(next.handle());
             MVLL_CHECK(!next.handle().done());

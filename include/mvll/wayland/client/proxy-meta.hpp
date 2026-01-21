@@ -90,7 +90,7 @@ namespace mvll::inline wayland::inline client
 #undef MVLL_INTERN_PROXY_METAINFO
     };
     template <class F>
-    constexpr auto dispatch_by_id(proxy_id id, F&& func) {
+    constexpr auto dispatch_by_id(proxy_id id, F&& func) noexcept (noexcept (func)) {
         switch (id) {
 #define MVLL_INTERN_DISPATCH_CASE(CLASS, ATTR)                          \
             case proxy_id::CLASS##_id: return func.template operator()<CLASS>();
@@ -102,7 +102,7 @@ namespace mvll::inline wayland::inline client
 
     template <class T> inline constexpr proxy_id identifier = proxy_id::INVALID_PROXY_ID;
 #define MVLL_INTERN_PROXY_ID_VALUE(CLASS, ATTR)                         \
-    template <> constexpr inline proxy_id identifier<CLASS> = proxy_id::CLASS##_id;
+    template <> inline constexpr proxy_id identifier<CLASS> = proxy_id::CLASS##_id;
     MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_ID_VALUE)
 #undef MVLL_INTERN_PROXY_ID_VALUE
 
@@ -134,29 +134,30 @@ namespace mvll::inline wayland::inline client
         typename internals::listener_to_proxy_impl<L>::type;
     };
 
-    template <is_proxy T> constexpr inline wl_interface const *const interface_ptr = nullptr;
+    template <is_proxy T> inline constexpr wl_interface const *const interface_ptr = nullptr;
 #define MVLL_INTERN_PROXY_INTERFACE(CLASS, ATTR)                         \
-    template <> constexpr inline wl_interface const *const interface_ptr<CLASS> = &CLASS##_interface;
+    template <> inline constexpr wl_interface const *const interface_ptr<CLASS> = &CLASS##_interface;
     MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_INTERFACE)
 #undef MVLL_INTERN_PROXY_INTERFACE
 
-    template <is_proxy T> constexpr inline std::string_view interface_name = "unknown";
+    template <is_proxy T> inline constexpr std::string_view interface_name = "invalid";
 #define MVLL_INTERN_PROXY_NAME(CLASS, ATTR)             \
-    template <> constexpr inline std::string_view interface_name<CLASS> = #CLASS;
+    template <> inline constexpr std::string_view interface_name<CLASS> = #CLASS;
     MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_NAME)
 #undef MVLL_INTERN_PROXY_NAME
 
-    template <class T> constexpr inline void (*delete_proxy)(T*) = nullptr;
-    template <> constexpr inline void (*delete_proxy<wl_display>)(wl_display*) = wl_display_disconnect;
-    template <is_proxy T> constexpr inline void (*delete_proxy<T>)(T*) noexcept = [](T* raw) noexcept {
+    template <class T> inline constexpr void (*delete_proxy)(T*) = nullptr;
+    template <> inline constexpr void (*delete_proxy<wl_display>)(wl_display*) = wl_display_disconnect;
+    template <is_proxy T> inline constexpr void (*delete_proxy<T>)(T*) noexcept = [](T* raw) noexcept {
         wl_proxy_destroy(reinterpret_cast<wl_proxy*>(raw));
     };
     template <is_proxy T> using unique_pointer = std::unique_ptr<T, decltype (delete_proxy<T>)>;
-    template <is_proxy T> unique_pointer<T> make_unique(T* raw = nullptr) noexcept {
+    template <is_proxy T>
+    [[nodiscard]] unique_pointer<T> make_unique(T* raw = nullptr) noexcept {
         return unique_pointer<T>{raw, delete_proxy<T>};
     }
     template <is_proxy_observable T>
-    constexpr inline int add_listener(T* raw, listener_type<T> const* listener, void* data) noexcept {
+    int add_listener(T* raw, listener_type<T> const* listener, void* data) noexcept {
         return wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(raw),
                                      reinterpret_cast<void (**)(void)>(
                                          const_cast<listener_type<T>*>(listener)),
@@ -185,7 +186,7 @@ namespace mvll::inline wayland::inline client
             using listener_type = std::remove_pointer_t<L>;
             using member_type = M;
             using rest_args_tuple = typename event_signature_traits<M>::rest_args_tuple;
-            static inline constexpr std::uint32_t ordinal = [] noexcept {
+            static inline constexpr std::uint32_t ordinal = [] consteval noexcept {
                 return pfr::get_ordinal<Member, [](auto...){}>();
             }();
         };
