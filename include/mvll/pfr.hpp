@@ -20,9 +20,9 @@ namespace mvll::inline pfr
 
         template <class T> concept aggregate = std::is_aggregate_v<T>;
 
-        template <class T, std::size_t... I> auto check_aggregate_init(std::index_sequence<I...>)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+        template <class T, std::size_t... I> auto check_aggregate_init(std::index_sequence<I...>)
             -> decltype(T{ ((void)I, any_type{})... }, std::true_type{});
 #pragma GCC diagnostic pop
         template <class T, std::size_t... I> std::false_type check_aggregate_init(...);

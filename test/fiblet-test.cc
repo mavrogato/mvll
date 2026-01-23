@@ -17,23 +17,25 @@ TEST_CASE("fiblet circulation test", "[mvll][fiblet]") {
     fiblet_base body_circ; // 体循環（DSL側）
 
     // 1. 肺循環（イベント待機側）の構築
-    auto listener = [&]() -> fiblet<test_args> {
+    auto listener = [](int& result) -> fiblet<test_args> {
         for (int i = 0; i < 2; ++i) {
             // ガコン！と待機（ここで体循環へジャンプするはず）
             auto const& args = co_await wait_current;
             result += args.value;
         }
-    }();
+        }(result);
+    listener.handle().resume();
 
     // 2. 体循環（DSL側）の構築
-    auto command = [&]() -> fiblet_base {
+    auto command = [](int& result) -> fiblet_base {
         // 肺から送られてきた結果を確認するだけの簡単なお仕事
         co_await wait_current;
         REQUIRE(result == 10);
         co_await wait_current;
         REQUIRE(result == 30);
         co_return;
-    }();
+    }(result);
+    command.handle().resume();
 
     // 3. 循環器の配線（コネクト）
     // 肺が終わったら体へ飛ぶようにセット（previousの活用）

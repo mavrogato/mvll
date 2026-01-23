@@ -53,8 +53,14 @@ int main(int, char** argv) {
     });
     wl_display_roundtrip(display);
 
+    struct stroke {
+        std::int32_t id;
+        fiblet<versor<wl_fixed_t, 2>> coro;
+    };
+    std::forward_list<stroke> strokes;
+
     for (auto& seat : seats) {
-        seat.on([&seat] -> listener_fiblet<&wl_seat_listener::capabilities> {
+        seat.on([&] -> listener_fiblet<&wl_seat_listener::capabilities> {
             proxy<wl_keyboard> keyboard;
             proxy<wl_pointer> pointer;
             proxy<wl_touch> touch;
@@ -100,11 +106,6 @@ int main(int, char** argv) {
                     if (!touch) {
                         touch = proxy{wl_seat_get_touch(seat)};
                     }
-                    struct stroke {
-                        std::int32_t id;
-                        fiblet<versor<wl_fixed_t, 2>> coro;
-                    };
-                    std::forward_list<stroke> strokes;
                     touch.on<&wl_touch_listener::down>([&](wl_touch*,
                                                            std::uint32_t,
                                                            std::uint32_t,
@@ -124,6 +125,7 @@ int main(int, char** argv) {
                             });
                         std::cout << "start stroke #" << id << std::endl;
                         versor<wl_fixed_t, 2> cur{x, y};
+                        strokes.front().coro.handle().resume();
                         strokes.front().coro.push(&cur);
                     });
                     touch.on<&wl_touch_listener::up>([&](wl_touch*,

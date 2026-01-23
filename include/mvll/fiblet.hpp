@@ -24,7 +24,7 @@ namespace mvll
                 std::terminate();
             }
             void return_void() const noexcept {}
-            std::suspend_never initial_suspend() const noexcept { return {}; }
+            std::suspend_always initial_suspend() const noexcept { return {}; }
             auto final_suspend() const noexcept {
                 struct final_awaiter {
                     bool await_ready() const noexcept { return false; }
