@@ -83,7 +83,7 @@ namespace mvll
         }
 
     public:
-        fiblet_base() = default;
+        fiblet_base() noexcept = default;
         explicit fiblet_base(std::coroutine_handle<> h) : handle_{h} {}
         fiblet_base(fiblet_base&& other) noexcept 
             : handle_(std::exchange(other.handle_, nullptr)) {}

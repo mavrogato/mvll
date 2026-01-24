@@ -1,28 +1,30 @@
 #ifndef INCLUDE_MVLL_MEMORY_HPP
 #define INCLUDE_MVLL_MEMORY_HPP
 
-#include <memory_resource>
+#include <concepts>
+#include <memory>
+#include <type_traits>
 #include <utility>
 
-#include <cstddef>
 
-namespace mvll::inline memory_strategy
+namespace mvll::inline memory
 {
+    template <template <class> class AllocTemplate = std::allocator>
     struct unique_erased_pod {
-        std::byte* chunk = nullptr;
+        void* chunk = nullptr;
         void (*dtor)(void*) noexcept = nullptr;
 
         unique_erased_pod(unique_erased_pod const&) = delete;
         unique_erased_pod& operator=(unique_erased_pod const&) = delete;
 
-        unique_erased_pod() noexcept = default;
-        unique_erased_pod(std::byte* chunk, void (*release)(void*) noexcept) noexcept
+        constexpr unique_erased_pod() noexcept = default;
+        constexpr unique_erased_pod(void* chunk, void (*dtor)(void*) noexcept) noexcept
             : chunk{chunk}
-            , dtor{release} {}
-        unique_erased_pod(unique_erased_pod&& other) noexcept
+            , dtor{dtor} {}
+        constexpr unique_erased_pod(unique_erased_pod&& other) noexcept
             : chunk{std::exchange(other.chunk, nullptr)}
             , dtor{std::exchange(other.dtor, nullptr)} {}
-        unique_erased_pod& operator=(unique_erased_pod&& other) noexcept {
+        constexpr unique_erased_pod& operator=(unique_erased_pod&& other) noexcept {
             if (this != &other) {
                 cleanup();
                 chunk = std::exchange(other.chunk, nullptr);
@@ -30,36 +32,44 @@ namespace mvll::inline memory_strategy
             }
             return *this;
         }
-        void cleanup() noexcept {
+        constexpr void cleanup() noexcept {
             if (chunk && dtor) {
                 dtor(chunk);
             }
             chunk = nullptr;
             dtor = nullptr;
         }
-        ~unique_erased_pod() noexcept {
+        constexpr ~unique_erased_pod() noexcept {
             cleanup();
+        }
+
+        constexpr explicit operator bool() const noexcept {
+            return chunk != nullptr;
+        }
+        template <class T>
+        constexpr explicit operator T*() const noexcept {
+            return static_cast<T*>(chunk);
         }
 
         template <class T> requires (std::destructible<std::decay_t<T>> && 
                                      (!std::is_array_v<std::remove_reference_t<T>>) &&
                                      std::is_nothrow_destructible_v<std::decay_t<T>> &&
-                                     std::move_constructible<std::decay_t<T>>)
-        std::decay_t<T>* emplace(T&& src) {
+                                     std::move_constructible<std::decay_t<T>> &&
+                                     std::is_nothrow_move_constructible_v<std::decay_t<T>> &&
+                                     std::is_nothrow_constructible_v<std::decay_t<T>, T>)
+        constexpr std::decay_t<T>* emplace(T&& src) {
             using Decayed = std::decay_t<T>;
-            constexpr std::size_t size = sizeof (Decayed);
-            constexpr std::size_t align = alignof (Decayed);
-            static auto alloc = std::pmr::new_delete_resource();
-            auto chunk = static_cast<std::byte*>(alloc->allocate(size, align));
+            auto buf = AllocTemplate<Decayed>().allocate(1);
             cleanup();
-            this->chunk = chunk;
-            this->dtor = [](void* raw) noexcept {
-                static_cast<Decayed*>(raw)->~Decayed();
-                alloc->deallocate(raw, size, align);
+            this->chunk = buf;
+            this->dtor = [](void* raw) constexpr noexcept {
+                Decayed* buf = static_cast<Decayed*>(raw);
+                std::destroy_at(buf);
+                AllocTemplate<Decayed>().deallocate(buf, 1);
             };
-            return new (chunk) Decayed(std::forward<T>(src));
+            return std::construct_at(buf, std::forward<T>(src));
         }
     };
-} // ::mvll::memory_strategy
+} // ::mvll::memory
 
 #endif /*INCLUDE_MVLL_MEMORY_HPP*/

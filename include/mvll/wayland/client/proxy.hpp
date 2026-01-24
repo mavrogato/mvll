@@ -2,6 +2,15 @@
 #define INCLUDE_MVLL_WAYLAND_CLIENT_PROXY_HPP
 
 #include <array>
+#include <coroutine>
+#include <iosfwd>
+#include <memory>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+
+#include <cstddef>
+#include <cstdint>
 
 #include <mvll/fiblet.hpp>
 #include <mvll/platform/linux.hpp>
@@ -69,44 +78,6 @@ namespace mvll::inline wayland::inline client
     static inline constexpr auto member_from_fiblet_v =
         listener_fiblet_traits<std::invoke_result_t<Func, Args...>>::member;
 
-    template <is_proxy T>
-    class proxy_impl {
-    public:
-        static inline constexpr auto metainfo = metadb[static_cast<std::size_t>(identifier<T>)];
-        static inline constexpr auto interface_ptr = mvll::interface_ptr<T>;
-        static inline constexpr auto interface_name = mvll::interface_name<T>;
-
-    public:
-        proxy_impl(T* raw = nullptr) noexcept : ptr_{raw, delete_proxy<T>} {}
-        proxy_impl(proxy_impl&& other) noexcept
-            : ptr_{other.ptr_.release(), delete_proxy<T>} {}
-
-        proxy_impl& operator=(proxy_impl&& other) noexcept {
-            this->ptr_.reset(other.ptr_.release());
-            return *this;
-        }
-
-    public:
-        void reset(T* raw = nullptr) noexcept { this->ptr_.reset(raw); }
-        [[nodiscard]] T* get() const noexcept { return this->ptr_.get(); }
-        [[nodiscard]] operator T*() const noexcept { return this->get(); }
-        [[nodiscard]] explicit operator bool() const noexcept { return this->ptr_.operator bool(); }
-        [[nodiscard]] std::uint32_t id() const noexcept {
-            MVLL_CHECK(this->operator bool());
-            return wl_proxy_get_id(reinterpret_cast<wl_proxy*>(this->get()));
-        }
-
-    public:
-        template <class Ch, class Tr>
-        friend std::basic_ostream<Ch, Tr>& operator<<(std::basic_ostream<Ch, Tr>& output,
-                                                      proxy_impl const& x) {
-            return output << std::tuple{interface_name, x.id(), x.get()};
-        }
-
-    private:
-        unique_pointer<T> ptr_;
-    };
-
     template <is_proxy_observable T>
     class thunk_table final {
     public:
@@ -146,6 +117,44 @@ namespace mvll::inline wayland::inline client
 
     private:
         std::unique_ptr<table_type> table_;
+    };
+
+    template <is_proxy T>
+    class proxy_impl {
+    public:
+        static inline constexpr auto metainfo = metadb[static_cast<std::size_t>(identifier<T>)];
+        static inline constexpr auto interface_ptr = mvll::interface_ptr<T>;
+        static inline constexpr auto interface_name = mvll::interface_name<T>;
+
+    public:
+        proxy_impl(T* raw = nullptr) noexcept : ptr_{raw, delete_proxy<T>} {}
+        proxy_impl(proxy_impl&& other) noexcept
+            : ptr_{other.ptr_.release(), delete_proxy<T>} {}
+
+        proxy_impl& operator=(proxy_impl&& other) noexcept {
+            this->ptr_.reset(other.ptr_.release());
+            return *this;
+        }
+
+    public:
+        void reset(T* raw = nullptr) noexcept { this->ptr_.reset(raw); }
+        [[nodiscard]] T* get() const noexcept { return this->ptr_.get(); }
+        [[nodiscard]] operator T*() const noexcept { return this->get(); }
+        [[nodiscard]] explicit operator bool() const noexcept { return this->ptr_.operator bool(); }
+        [[nodiscard]] std::uint32_t id() const noexcept {
+            MVLL_CHECK(this->operator bool());
+            return wl_proxy_get_id(reinterpret_cast<wl_proxy*>(this->get()));
+        }
+
+    public:
+        template <class Ch, class Tr>
+        friend std::basic_ostream<Ch, Tr>& operator<<(std::basic_ostream<Ch, Tr>& output,
+                                                      proxy_impl const& x) {
+            return output << std::tuple{interface_name, x.id(), x.get()};
+        }
+
+    private:
+        unique_pointer<T> ptr_;
     };
 
     template <class> class proxy;
@@ -201,7 +210,7 @@ namespace mvll::inline wayland::inline client
 
     private:
         thunk_table<T> table_ = {};
-        std::array<unique_erased_pod, thunk_table<T>::SIZE> antiopt_cache_ = {};
+        std::array<unique_erased_pod<>, thunk_table<T>::SIZE> antiopt_cache_ = {};
     };
 
     template <is_proxy T>
@@ -209,10 +218,10 @@ namespace mvll::inline wayland::inline client
         return proxy{static_cast<T*>(::wl_registry_bind(registry, name, interface_ptr<T>, version))};
     }
 
-    template <class T = color, wl_shm_format FORMAT = WL_SHM_FORMAT_XRGB8888, size_t BYPP = sizeof (color)>
+    template <class T = color, wl_shm_format FORMAT = WL_SHM_FORMAT_XRGB8888, std::size_t BYPP = sizeof (color)>
     [[nodiscard]] inline auto shm_allocate_buffer(wl_shm* shm,
-                                                  size_t cx,
-                                                  size_t cy,
+                                                  std::size_t cx,
+                                                  std::size_t cy,
                                                   std::size_t bypp = BYPP,
                                                   wl_shm_format format = FORMAT) {
         mvll::platform::unique_fd fd{::memfd_create("mvll-shm", MFD_CLOEXEC)};
