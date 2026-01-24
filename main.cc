@@ -60,12 +60,12 @@ int main(int, char** argv) {
     std::forward_list<stroke> strokes;
 
     for (auto& seat : seats) {
-        seat.on([&] -> listener_fiblet<&wl_seat_listener::capabilities> {
+        seat.on([&strokes] -> listener_fiblet<&wl_seat_listener::capabilities> {
             proxy<wl_keyboard> keyboard;
             proxy<wl_pointer> pointer;
             proxy<wl_touch> touch;
             for (;;) {
-                [[maybe_unused]] auto const& [s, caps] = co_await wait_current;
+                [[maybe_unused]] auto const& [seat, caps] = co_await wait_current;
                 if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
                     if (!keyboard) {
                         keyboard = proxy{wl_seat_get_keyboard(seat)};

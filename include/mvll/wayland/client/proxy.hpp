@@ -2,10 +2,10 @@
 #define INCLUDE_MVLL_WAYLAND_CLIENT_PROXY_HPP
 
 #include <array>
-#include <coroutine>
 
 #include <mvll/fiblet.hpp>
 #include <mvll/platform/linux.hpp>
+#include <mvll/memory.hpp>
 #include <mvll/versor.hpp>
 
 #include <wayland-client-core.h>
@@ -46,8 +46,8 @@ namespace mvll::inline wayland::inline client
     {
         using fiblet_type = fiblet<typename event_traits<Member>::rest_args_tuple>;
         using fiblet_type::fiblet_type;
-        void push(void const* input) const override {
-            fiblet_base::push(input);
+        void push(void const* src) const override {
+            fiblet_base::push(src);
         }
     };
 
@@ -161,13 +161,13 @@ namespace mvll::inline wayland::inline client
         proxy(std::nullptr_t = nullptr)
             : proxy_impl<T>{}
             , table_{}
-            , persistent_buffer_{}
+            , antiopt_cache_{}
             {
             }
         proxy(T* raw)
             : proxy_impl<T>{raw}
             , table_{}
-            , persistent_buffer_{}
+            , antiopt_cache_{}
             {
                 MVLL_CHECK(-1 != table_.start(this->get()));
             }
@@ -184,10 +184,9 @@ namespace mvll::inline wayland::inline client
         void on(Func&& coro, InitialArgs&&... init) {
             using DecayFunc = std::decay_t<Func>;
             constexpr auto Member = member_from_fiblet_v<DecayFunc, InitialArgs...>;
-            constexpr std::size_t ordinal = event_traits<Member>::ordinal;
             static_assert(std::is_same_v<typename event_traits<Member>::listener_type, listener_type<T>>);
-            auto persistent_coro = sustain_optimized_out(std::forward<Func>(coro), ordinal);
-            auto flit = new listener_fiblet<Member>{(*persistent_coro)(std::forward<InitialArgs>(init)...)};
+            DecayFunc* sustained = antiopt_cache_[event_traits<Member>::ordinal].emplace(std::forward<Func>(coro));
+            auto flit = new listener_fiblet<Member>{(*sustained)(std::forward<InitialArgs>(init)...)};
             table_.template add<Member>(flit);
             flit->handle().resume();
         }
@@ -201,50 +200,8 @@ namespace mvll::inline wayland::inline client
         }
 
     private:
-        struct optimized_out_sustainer {
-            std::byte* chunk = nullptr;
-            void (*release)(void*) noexcept = nullptr;
-
-            optimized_out_sustainer() noexcept = default;
-            optimized_out_sustainer(std::byte* chunk, void (*release)(void*) noexcept) noexcept
-                : chunk{chunk}
-                , release{release}
-                {}
-            optimized_out_sustainer(optimized_out_sustainer&& other) noexcept
-                : chunk(std::exchange(other.chunk, nullptr))
-                , release(std::exchange(other.release, nullptr)) {}
-            optimized_out_sustainer& operator=(optimized_out_sustainer&& other) noexcept {
-                if (this != &other) {
-                    if (chunk && release) release(chunk);
-                    chunk = std::exchange(other.chunk, nullptr);
-                    release = std::exchange(other.release, nullptr);
-                }
-                return *this;
-            }
-            ~optimized_out_sustainer() noexcept {
-                if (chunk && release) release(chunk);
-            }
-            optimized_out_sustainer(optimized_out_sustainer const&) = delete;
-            optimized_out_sustainer& operator=(optimized_out_sustainer const&) = delete;
-        };
-        template <class Func>
-        auto const* sustain_optimized_out(Func&& coro, std::uint32_t ordinal) {
-            using DecayFunc = std::decay_t<Func>;
-            static constexpr std::align_val_t alignment = std::align_val_t{alignof (DecayFunc)};
-            auto chunk = new (alignment) std::byte[sizeof (DecayFunc)];
-            persistent_buffer_[ordinal] = {
-                chunk,
-                [](void* raw) noexcept {
-                    static_cast<DecayFunc*>(raw)->~DecayFunc();
-                    ::operator delete[](raw, alignment);
-                },
-            };
-            return (new (chunk) DecayFunc(std::forward<Func>(coro)));
-        }
-
-    private:
         thunk_table<T> table_ = {};
-        std::array<optimized_out_sustainer, thunk_table<T>::SIZE> persistent_buffer_ = {};
+        std::array<unique_erased_pod, thunk_table<T>::SIZE> antiopt_cache_ = {};
     };
 
     template <is_proxy T>
