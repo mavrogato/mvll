@@ -10,21 +10,21 @@
 namespace mvll::inline memory
 {
     template <template <class> class AllocTemplate = std::allocator>
-    struct unique_erased_pod {
+    struct move_only_erased_box {
         void* chunk = nullptr;
         void (*dtor)(void*) noexcept = nullptr;
 
-        unique_erased_pod(unique_erased_pod const&) = delete;
-        unique_erased_pod& operator=(unique_erased_pod const&) = delete;
+        move_only_erased_box(move_only_erased_box const&) = delete;
+        move_only_erased_box& operator=(move_only_erased_box const&) = delete;
 
-        constexpr unique_erased_pod() noexcept = default;
-        constexpr unique_erased_pod(void* chunk, void (*dtor)(void*) noexcept) noexcept
+        constexpr move_only_erased_box() noexcept = default;
+        constexpr move_only_erased_box(void* chunk, void (*dtor)(void*) noexcept) noexcept
             : chunk{chunk}
             , dtor{dtor} {}
-        constexpr unique_erased_pod(unique_erased_pod&& other) noexcept
+        constexpr move_only_erased_box(move_only_erased_box&& other) noexcept
             : chunk{std::exchange(other.chunk, nullptr)}
             , dtor{std::exchange(other.dtor, nullptr)} {}
-        constexpr unique_erased_pod& operator=(unique_erased_pod&& other) noexcept {
+        constexpr move_only_erased_box& operator=(move_only_erased_box&& other) noexcept {
             if (this != &other) {
                 cleanup();
                 chunk = std::exchange(other.chunk, nullptr);
@@ -39,16 +39,28 @@ namespace mvll::inline memory
             chunk = nullptr;
             dtor = nullptr;
         }
-        constexpr ~unique_erased_pod() noexcept {
+        constexpr ~move_only_erased_box() noexcept {
             cleanup();
         }
 
-        constexpr explicit operator bool() const noexcept {
+        [[nodiscard]] constexpr explicit operator bool() const noexcept {
             return chunk != nullptr;
         }
-        template <class T>
-        constexpr explicit operator T*() const noexcept {
+        template <class T = void>
+        [[nodiscard]] constexpr T const* get() const noexcept {
+            return static_cast<T const*>(chunk);
+        }
+        template <class T = void>
+        [[nodiscard]] constexpr T* get() noexcept {
             return static_cast<T*>(chunk);
+        }
+        template <class T>
+        [[nodiscard]] constexpr explicit operator T const*() const noexcept {
+            return get<T>();
+        }
+        template <class T>
+        [[nodiscard]] constexpr explicit operator T*() noexcept {
+            return get<T>();
         }
 
         template <class T> requires (std::destructible<std::decay_t<T>> && 

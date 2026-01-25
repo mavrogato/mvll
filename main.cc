@@ -1,29 +1,29 @@
 
 #include "mvll/error-handling.hpp"
 
-#include <filesystem>
 #include <forward_list>
+#include <iostream>
 #include <type_traits>
 
 #include <mvll/cpp2x/tuple-support.hpp>
 #include <mvll/fiblet.hpp>
 #include <mvll/platform/linux.hpp>
 
+#include <mvll/wayland/client/proxy-pre.hpp>
 #include <xdg-shell-client.h>
 #include <zwp-tablet-v2-client.h>
-#include <mvll/wayland/client/proxy-pre.hpp>
+#include <wp-fractional-scale-v1-client.h>
 #define MVLL_PROXY_LIST(V)                                              \
-    V(xdg_wm_base,           PROXY_ATTR_HAS_LISTENER)                   \
-    V(xdg_surface,           PROXY_ATTR_HAS_LISTENER)                   \
-    V(xdg_toplevel,          PROXY_ATTR_HAS_LISTENER)                   \
-    V(zwp_tablet_manager_v2, PROXY_ATTR_NONE)                           \
-    V(zwp_tablet_seat_v2,    PROXY_ATTR_HAS_LISTENER)                   \
-    V(zwp_tablet_tool_v2,    PROXY_ATTR_HAS_LISTENER)
+    V(xdg_wm_base,            PROXY_ATTR_HAS_LISTENER)                  \
+    V(xdg_surface,            PROXY_ATTR_HAS_LISTENER)                  \
+    V(xdg_toplevel,           PROXY_ATTR_HAS_LISTENER)                  \
+    V(zwp_tablet_manager_v2,  PROXY_ATTR_NONE)                          \
+    V(zwp_tablet_seat_v2,     PROXY_ATTR_HAS_LISTENER)                  \
+    V(zwp_tablet_tool_v2,     PROXY_ATTR_HAS_LISTENER)                  \
+    V(wp_fractional_scale_v1, PROXY_ATTR_HAS_LISTENER)                  
 #include <mvll/wayland/client/proxy.hpp>
 
-#include <iostream>
-
-int main(int, char** argv) {
+int main() {
     using namespace mvll;
     auto display = proxy{wl_display_connect(nullptr)};
     auto registry = proxy{wl_display_get_registry(display.get())};
@@ -31,6 +31,7 @@ int main(int, char** argv) {
     std::forward_list<proxy<wl_seat>> seats;
     proxy<wl_shm> shm;
     proxy<xdg_wm_base> shell;
+    proxy<zwp_tablet_manager_v2> tablet_manager;
     registry.on<&wl_registry_listener::global>([&](wl_registry*  registry,
                                                    std::uint32_t name,
                                                    char const*   interface,
@@ -47,6 +48,9 @@ int main(int, char** argv) {
         else if (interface_name<xdg_wm_base> == interface) {
             shell = registry_bind<xdg_wm_base>(registry, name, version);
         }
+        // else if (interface_name<zwp_tablet_manager_v2> == interface) {
+        //     tablet_manager = registry_bind<zwp_tablet_manager_v2>(registry, name, version);
+        // }
     });
     registry.on<&wl_registry_listener::global_remove>([&](wl_registry*, std::uint32_t name) noexcept {
         std::erase_if(seats, [name](auto const& s) { return s.id() == name; });
@@ -60,12 +64,23 @@ int main(int, char** argv) {
     std::forward_list<stroke> strokes;
 
     for (auto& seat : seats) {
-        seat.on([&strokes] -> listener_fiblet<&wl_seat_listener::capabilities> {
+        // MVLL_CHECK(tablet_manager);
+        // if (tablet_manager) {
+        //     auto tablet_seat = proxy{zwp_tablet_manager_v2_get_tablet_seat(tablet_manager, seat)};
+        //     MVLL_CHECK(tablet_seat);
+        //     tablet_seat.on([&] -> listener_fiblet<&zwp_tablet_seat_v2_listener::pad_added> {
+        //             std::cout << "pad added!" << std::endl;
+        //         });
+        //     tablet_seat.on<&zwp_tablet_seat_v2_listener::tool_added>([&](auto...) {
+        //         std::cout << "tool added!" << std::endl;
+        //     });
+        // }
+        seat.on([&] -> listener_fiblet<&wl_seat_listener::capabilities> {
             proxy<wl_keyboard> keyboard;
             proxy<wl_pointer> pointer;
             proxy<wl_touch> touch;
             for (;;) {
-                [[maybe_unused]] auto const& [seat, caps] = co_await wait_current;
+                auto const& [seat, caps] = co_await wait_current;
                 if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
                     if (!keyboard) {
                         keyboard = proxy{wl_seat_get_keyboard(seat)};
@@ -115,11 +130,11 @@ int main(int, char** argv) {
                                                            wl_fixed_t y) noexcept {
                         strokes.emplace_front(stroke {
                                 id,
-                                [&]() -> fiblet<versor<wl_fixed_t, 2>> {
+                                [id]() -> fiblet<versor<wl_fixed_t, 2>> {
                                     for (;;) {
                                         [[maybe_unused]] auto ret = co_yield {};
                                         auto [x, y] = *static_cast<versor<wl_fixed_t, 2> const*>(ret);
-                                        std::cout << x << ':' << y << std::endl;
+                                        std::cout << id << ": " << x << ',' << y << std::endl;
                                     }
                                 }(),
                             });
@@ -213,7 +228,7 @@ int main(int, char** argv) {
     toplevel.on<&xdg_toplevel_listener::close>([&](xdg_toplevel*) noexcept {
         quit = true;
     });
-    xdg_toplevel_set_app_id(toplevel, std::filesystem::path(argv[0]).filename().c_str());
+    xdg_toplevel_set_app_id(toplevel, "mvll");
 
     wl_surface_commit(surface);
     while (-1 != wl_display_dispatch(display)) {
