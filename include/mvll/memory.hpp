@@ -9,6 +9,14 @@
 
 namespace mvll::inline memory
 {
+    template <class T>
+    concept is_boxed_type = std::destructible<std::decay_t<T>>
+        && (!std::is_array_v<std::remove_reference_t<T>>)
+        && std::is_nothrow_destructible_v<std::decay_t<T>>
+        && std::move_constructible<std::decay_t<T>>
+        && std::is_nothrow_move_constructible_v<std::decay_t<T>>
+        && std::is_nothrow_constructible_v<std::decay_t<T>, T>;
+
     template <template <class> class AllocTemplate = std::allocator>
     struct move_only_erased_box {
         void* chunk = nullptr;
@@ -18,9 +26,11 @@ namespace mvll::inline memory
         move_only_erased_box& operator=(move_only_erased_box const&) = delete;
 
         constexpr move_only_erased_box() noexcept = default;
-        constexpr move_only_erased_box(void* chunk, void (*dtor)(void*) noexcept) noexcept
-            : chunk{chunk}
-            , dtor{dtor} {}
+        template <class T>requires (!std::derived_from<std::decay_t<T>, move_only_erased_box<AllocTemplate>>
+                                    && is_boxed_type<T>)
+        constexpr explicit move_only_erased_box(T&& src) {
+            this->emplace(std::forward<T>(src));
+        }
         constexpr move_only_erased_box(move_only_erased_box&& other) noexcept
             : chunk{std::exchange(other.chunk, nullptr)}
             , dtor{std::exchange(other.dtor, nullptr)} {}
@@ -63,13 +73,8 @@ namespace mvll::inline memory
             return get<T>();
         }
 
-        template <class T> requires (std::destructible<std::decay_t<T>> && 
-                                     (!std::is_array_v<std::remove_reference_t<T>>) &&
-                                     std::is_nothrow_destructible_v<std::decay_t<T>> &&
-                                     std::move_constructible<std::decay_t<T>> &&
-                                     std::is_nothrow_move_constructible_v<std::decay_t<T>> &&
-                                     std::is_nothrow_constructible_v<std::decay_t<T>, T>)
-        constexpr std::decay_t<T>* emplace(T&& src) {
+        template <is_boxed_type T>
+        constexpr std::decay_t<T>& emplace(T&& src) {
             using Decayed = std::decay_t<T>;
             auto buf = AllocTemplate<Decayed>().allocate(1);
             cleanup();
@@ -79,7 +84,7 @@ namespace mvll::inline memory
                 std::destroy_at(buf);
                 AllocTemplate<Decayed>().deallocate(buf, 1);
             };
-            return std::construct_at(buf, std::forward<T>(src));
+            return *std::construct_at(buf, std::forward<T>(src));
         }
     };
 } // ::mvll::memory
