@@ -46,7 +46,7 @@ namespace mvll::inline wayland::inline client
 {
     template <class T> concept is_defined = requires { sizeof (T); };
 
-    enum class proxy_id : std::uint32_t {
+    enum class proxy_class_id : std::uint32_t {
 #define MVLL_INTERN_PROXY_ID(CLASS, ATTR)       \
         CLASS##_id,
         MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_ID)
@@ -54,22 +54,22 @@ namespace mvll::inline wayland::inline client
         NOF_PROXIES,
         INVALID_PROXY_ID = static_cast<std::uint32_t>(-1),
     };
-    constexpr std::size_t NOF_PROXIES = static_cast<std::size_t>(proxy_id::NOF_PROXIES);
+    constexpr std::size_t NOF_PROXIES = static_cast<std::size_t>(proxy_class_id::NOF_PROXIES);
 
     namespace internals
     {
-        template <proxy_id ID> struct proxy_type_impl;
-#define MVLL_INTERN_PROXY_TYPE(CLASS, ATTR)                         \
-        template <> struct proxy_type_impl<proxy_id::CLASS##_id> {  \
-            using type = CLASS;                                     \
+        template <proxy_class_id ID> struct proxy_type_impl;
+#define MVLL_INTERN_PROXY_TYPE(CLASS, ATTR)                             \
+        template <> struct proxy_type_impl<proxy_class_id::CLASS##_id> { \
+            using type = struct CLASS;                                  \
         };
         MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_TYPE)
 #undef MVLL_INTERN_PROXY_TYPE
     }
-    template <proxy_id ID> using proxy_type = internals::proxy_type_impl<ID>::type;
+    template <proxy_class_id ID> using proxy_type = internals::proxy_type_impl<ID>::type;
 
     struct proxy_metainfo {
-        proxy_id id = proxy_id::INVALID_PROXY_ID;
+        proxy_class_id id = proxy_class_id::INVALID_PROXY_ID;
         std::uint32_t attr = 0;
         char const *const name = "invalid";
         wl_interface const *const interface_ptr = nullptr;
@@ -81,7 +81,7 @@ namespace mvll::inline wayland::inline client
     constexpr std::array<proxy_metainfo, NOF_PROXIES> metadb {
 #define MVLL_INTERN_PROXY_METAINFO(CLASS, ATTR)                         \
         proxy_metainfo{                                                 \
-            proxy_id::CLASS##_id,                                       \
+            proxy_class_id::CLASS##_id,                                 \
             ATTR,                                                       \
             #CLASS,                                                     \
             &CLASS##_interface,                                         \
@@ -90,23 +90,23 @@ namespace mvll::inline wayland::inline client
 #undef MVLL_INTERN_PROXY_METAINFO
     };
     template <class F>
-    constexpr auto dispatch_by_id(proxy_id id, F&& func) noexcept (noexcept (func)) {
+    constexpr auto dispatch_by_id(proxy_class_id id, F&& func) noexcept (noexcept (func)) {
         switch (id) {
 #define MVLL_INTERN_DISPATCH_CASE(CLASS, ATTR)                          \
-            case proxy_id::CLASS##_id: return func.template operator()<CLASS>();
+            case proxy_class_id::CLASS##_id: return func.template operator()<CLASS>();
             MVLL_PROXY_LIST_MASTER(MVLL_INTERN_DISPATCH_CASE)
 #undef MVLL_INTERN_DISPATCH_CASE
         default: return func.template operator()<void>();
         }
     }
 
-    template <class T> inline constexpr proxy_id identifier = proxy_id::INVALID_PROXY_ID;
+    template <class T> inline constexpr proxy_class_id identifier = proxy_class_id::INVALID_PROXY_ID;
 #define MVLL_INTERN_PROXY_ID_VALUE(CLASS, ATTR)                         \
-    template <> inline constexpr proxy_id identifier<CLASS> = proxy_id::CLASS##_id;
+    template <> inline constexpr proxy_class_id identifier<struct CLASS> = proxy_class_id::CLASS##_id;
     MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_ID_VALUE)
 #undef MVLL_INTERN_PROXY_ID_VALUE
 
-    template <class T> concept is_proxy = ((identifier<T>) < proxy_id::NOF_PROXIES);
+    template <class T> concept is_proxy = ((identifier<T>) < proxy_class_id::NOF_PROXIES);
 
     namespace internals
     {
@@ -115,11 +115,11 @@ namespace mvll::inline wayland::inline client
 #define MVLL_INTERN_PROXY_LISTENER(CLASS, ATTR)                         \
         MVLL_WHEN(                                                      \
             ATTR,                                                       \
-            template <> struct proxy_to_listener_impl<CLASS> {          \
+            template <> struct proxy_to_listener_impl<struct CLASS> {   \
                 using type = CLASS##_listener;                          \
             };                                                          \
             template <> struct listener_to_proxy_impl<CLASS##_listener> { \
-                using type = CLASS;                                     \
+                using type = struct CLASS;                               \
             };                                                          \
         )
         MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_LISTENER)
@@ -136,13 +136,13 @@ namespace mvll::inline wayland::inline client
 
     template <is_proxy T> inline constexpr wl_interface const *const interface_ptr = nullptr;
 #define MVLL_INTERN_PROXY_INTERFACE(CLASS, ATTR)                         \
-    template <> inline constexpr wl_interface const *const interface_ptr<CLASS> = &CLASS##_interface;
+    template <> inline constexpr wl_interface const *const interface_ptr<struct CLASS> = &CLASS##_interface;
     MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_INTERFACE)
 #undef MVLL_INTERN_PROXY_INTERFACE
 
     template <is_proxy T> inline constexpr std::string_view interface_name = "invalid";
 #define MVLL_INTERN_PROXY_NAME(CLASS, ATTR)             \
-    template <> inline constexpr std::string_view interface_name<CLASS> = #CLASS;
+    template <> inline constexpr std::string_view interface_name<struct CLASS> = #CLASS;
     MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_NAME)
 #undef MVLL_INTERN_PROXY_NAME
 

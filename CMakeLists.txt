@@ -26,6 +26,8 @@ pkg_get_variable(WaylandProtocolPath wayland-protocols pkgdatadir)
 set(XDG_SHELL_PROTOCOL                  ${WaylandProtocolPath}/stable/xdg-shell/xdg-shell.xml)
 set(ZWP_LINUX_DMABUF_V1_PROTOCOL        ${WaylandProtocolPath}/stable/linux-dmabuf/linux-dmabuf-v1.xml)
 set(WP_FRACTIONAL_SCALE_V1_PROTOCOL     ${WaylandProtocolPath}/staging/fractional-scale/fractional-scale-v1.xml)
+set(WP_VIEWPORTER_PROTOCOL              ${WaylandProtocolPath}/stable/viewporter/viewporter.xml)
+set(WP_PRESENTATION_PROTOCOL            ${WaylandProtocolPath}/stable/presentation-time/presentation-time.xml)
 set(ZWP_POINTER_CONSTRAINTS_V1_PROTOCOL ${WaylandProtocolPath}/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml)
 set(ZWP_TABLET_V2_PROTOCOL              ${WaylandProtocolPath}/unstable/tablet/tablet-unstable-v2.xml)
 message(XDG_SHELL_PROTOCOL="${XDG_SHELL_PROTOCOL}")
@@ -46,6 +48,14 @@ add_custom_command(
   COMMAND wayland-scanner client-header ${WP_FRACTIONAL_SCALE_V1_PROTOCOL} wp-fractional-scale-v1-client.h
   COMMAND wayland-scanner private-code  ${WP_FRACTIONAL_SCALE_V1_PROTOCOL} wp-fractional-scale-v1-private.c)
 add_custom_command(
+  OUTPUT wp-viewporter-private.c
+  COMMAND wayland-scanner client-header ${WP_VIEWPORTER_PROTOCOL} wp-viewporter-client.h
+  COMMAND wayland-scanner private-code  ${WP_VIEWPORTER_PROTOCOL} wp-viewporter-private.c)
+add_custom_command(
+  OUTPUT wp-presentation-private.c
+  COMMAND wayland-scanner client-header ${WP_PRESENTATION_PROTOCOL} wp-presentation-client.h
+  COMMAND wayland-scanner private-code  ${WP_PRESENTATION_PROTOCOL} wp-presentation-private.c)
+add_custom_command(
   OUTPUT zwp-pointer-constraints-v1-private.c
   COMMAND wayland-scanner client-header ${ZWP_POINTER_CONSTRAINTS_V1_PROTOCOL} zwp-pointer-constraints-v1-client.h
   COMMAND wayland-scanner private-code  ${ZWP_POINTER_CONSTRAINTS_V1_PROTOCOL} zwp-pointer-constraints-v1-private.c)
@@ -58,6 +68,8 @@ add_library(wayland-protocols-mvll
   xdg-shell-private.c
   zwp-linux-dmabuf-v1-private.c
   wp-fractional-scale-v1-private.c
+  wp-viewporter-private.c
+  wp-presentation-private.c
   zwp-pointer-constraints-v1-private.c
   zwp-tablet-v2-private.c
 )

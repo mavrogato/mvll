@@ -146,9 +146,15 @@ namespace mvll::inline wayland::inline client
         static inline constexpr auto interface_name = mvll::interface_name<T>;
 
     public:
-        proxy_impl(T* raw = nullptr) noexcept
-            : ptr_{raw, delete_proxy<T>}
+        proxy_impl(std::nullptr_t = nullptr) noexcept
+            : ptr_{nullptr, delete_proxy<T>}
             , anchor_{} {}
+        proxy_impl(T* raw) MVLL_NOEXCEPT
+            : ptr_{raw, delete_proxy<T>}
+            , anchor_{}
+            {
+                MVLL_CHECK(raw);
+            }
         proxy_impl(proxy_impl&& other) noexcept
             : ptr_{other.ptr_.release(), delete_proxy<T>}
             , anchor_{std::exchange(other.anchor_, {})} {}
@@ -172,7 +178,7 @@ namespace mvll::inline wayland::inline client
 
     public:
         [[nodiscard]] bool has_anchor() const noexcept { return static_cast<bool>(anchor_); }
-        template <is_boxed_type R>
+        template <is_boxable_type R>
         std::decay_t<R>& emplace_anchor(R&& src) {
             return anchor_.emplace(std::forward<R>(src));
         }
@@ -243,11 +249,11 @@ namespace mvll::inline wayland::inline client
     }
 
     template <class T = color, wl_shm_format FORMAT = WL_SHM_FORMAT_XRGB8888, std::size_t BYPP = sizeof (color)>
-    [[nodiscard]] inline auto shm_allocate_buffer(wl_shm* shm,
-                                                  std::size_t cx,
-                                                  std::size_t cy,
-                                                  std::size_t bypp = BYPP,
-                                                  wl_shm_format format = FORMAT) {
+    [[nodiscard]] auto shm_allocate_buffer(wl_shm* shm,
+                                           std::size_t cx,
+                                           std::size_t cy,
+                                           std::size_t bypp = BYPP,
+                                           wl_shm_format format = FORMAT) {
         mvll::platform::unique_fd fd{::memfd_create("mvll-shm", MFD_CLOEXEC)};
         MVLL_CHECK(0 <= ::ftruncate(fd, bypp*cx*cy));
         mvll::platform::unique_mmap<T> data{nullptr, bypp*cx*cy, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0};

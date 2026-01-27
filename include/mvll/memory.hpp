@@ -10,14 +10,14 @@
 namespace mvll::inline memory
 {
     template <class T>
-    concept is_boxed_type = std::destructible<std::decay_t<T>>
+    concept is_boxable_type = std::destructible<std::decay_t<T>>
         && (!std::is_array_v<std::remove_reference_t<T>>)
         && std::is_nothrow_destructible_v<std::decay_t<T>>
         && std::move_constructible<std::decay_t<T>>
         && std::is_nothrow_move_constructible_v<std::decay_t<T>>
         && std::is_nothrow_constructible_v<std::decay_t<T>, T>;
 
-    template <template <class> class AllocTemplate = std::allocator>
+    template <template <class> class AllocTemplate = std::allocator> // T.B.D.
     struct move_only_erased_box {
         void* chunk = nullptr;
         void (*dtor)(void*) noexcept = nullptr;
@@ -27,7 +27,7 @@ namespace mvll::inline memory
 
         constexpr move_only_erased_box() noexcept = default;
         template <class T>requires (!std::derived_from<std::decay_t<T>, move_only_erased_box<AllocTemplate>>
-                                    && is_boxed_type<T>)
+                                    && is_boxable_type<T>)
         constexpr explicit move_only_erased_box(T&& src) {
             this->emplace(std::forward<T>(src));
         }
@@ -73,7 +73,7 @@ namespace mvll::inline memory
             return get<T>();
         }
 
-        template <is_boxed_type T>
+        template <is_boxable_type T>
         constexpr std::decay_t<T>& emplace(T&& src) {
             using Decayed = std::decay_t<T>;
             auto buf = AllocTemplate<Decayed>().allocate(1);

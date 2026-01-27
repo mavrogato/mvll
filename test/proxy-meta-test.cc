@@ -10,16 +10,16 @@
 #include <catch2/catch_test_macros.hpp>
 
 TEST_CASE("enumeration", "[mvll][wayland][client][proxy-meta]") {
-    static_assert(static_cast<std::uint32_t>(mvll::proxy_id::wl_display_id) == 0);
-    static_assert(static_cast<std::uint32_t>(mvll::proxy_id::xdg_wm_base_id) == mvll::NOF_PROXIES - 1);
-    REQUIRE(static_cast<std::uint32_t>(mvll::proxy_id::wl_display_id) == 0);
-    REQUIRE(static_cast<std::uint32_t>(mvll::proxy_id::xdg_wm_base_id) == mvll::NOF_PROXIES - 1);
+    static_assert(static_cast<std::uint32_t>(mvll::proxy_class_id::wl_display_id) == 0);
+    static_assert(static_cast<std::uint32_t>(mvll::proxy_class_id::xdg_wm_base_id) == mvll::NOF_PROXIES - 1);
+    REQUIRE(static_cast<std::uint32_t>(mvll::proxy_class_id::wl_display_id) == 0);
+    REQUIRE(static_cast<std::uint32_t>(mvll::proxy_class_id::xdg_wm_base_id) == mvll::NOF_PROXIES - 1);
 }
 
 TEST_CASE("display connect/disconnect via metadb", "[mvll][wayland][client][proxy-meta]") {
     constexpr auto& info = mvll::wayland::client::metadb[0];
     SECTION("metadata validation") {
-        REQUIRE(info.id == mvll::wayland::client::proxy_id::wl_display_id);
+        REQUIRE(info.id == mvll::wayland::client::proxy_class_id::wl_display_id);
         REQUIRE(std::string_view(info.name) == "wl_display");
         REQUIRE(info.interface_ptr == &wl_display_interface);
     }
@@ -38,7 +38,7 @@ TEST_CASE("display connect/disconnect via metadb", "[mvll][wayland][client][prox
 
 TEST_CASE("registry via metadb", "[mvll][wayland][client][proxy-meta]") {
     using namespace mvll::wayland::client;
-    constexpr auto rid = proxy_id::wl_registry_id;
+    constexpr auto rid = proxy_class_id::wl_registry_id;
     constexpr auto& info = metadb[static_cast<std::size_t>(rid)];
     if (auto* display = wl_display_connect(nullptr)) {
         auto* registry = wl_display_get_registry(display);
@@ -69,11 +69,11 @@ TEST_CASE("registry via metadb", "[mvll][wayland][client][proxy-meta]") {
 }
 
 TEST_CASE("dispatching", "[mvll][wayland][client][proxy-meta]") {
-    mvll::dispatch_by_id(mvll::proxy_id::wl_display_id, []<class T>{
+    mvll::dispatch_by_id(mvll::proxy_class_id::wl_display_id, []<class T>{
             REQUIRE(std::is_same_v<wl_display, T>);
             REQUIRE_FALSE(std::is_same_v<xdg_wm_base, T>);
         });
-    mvll::dispatch_by_id(mvll::proxy_id::xdg_wm_base_id, []<class T>{
+    mvll::dispatch_by_id(mvll::proxy_class_id::xdg_wm_base_id, []<class T>{
             REQUIRE_FALSE(std::is_same_v<wl_display, T>);
             REQUIRE(std::is_same_v<xdg_wm_base, T>);
         });

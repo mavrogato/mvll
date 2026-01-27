@@ -10,20 +10,26 @@
 #include <mvll/platform/linux.hpp>
 
 #include <mvll/wayland/client/proxy-pre.hpp>
+#include <wp-fractional-scale-v1-client.h>
+#include <wp-presentation-client.h>
+#include <wp-viewporter-client.h>
 #include <xdg-shell-client.h>
 #include <zwp-tablet-v2-client.h>
-#include <wp-fractional-scale-v1-client.h>
 #define MVLL_PROXY_LIST(V)                                              \
-    V(xdg_wm_base,                    PROXY_ATTR_HAS_LISTENER)          \
+    V(wp_fractional_scale_manager_v1, PROXY_ATTR_NONE)                  \
+    V(wp_fractional_scale_v1,         PROXY_ATTR_HAS_LISTENER)          \
+    V(wp_presentation,                PROXY_ATTR_HAS_LISTENER)          \
+    V(wp_presentation_feedback,       PROXY_ATTR_HAS_LISTENER)          \
+    V(wp_viewport,                    PROXY_ATTR_NONE)                  \
+    V(wp_viewporter,                  PROXY_ATTR_NONE)                  \
     V(xdg_surface,                    PROXY_ATTR_HAS_LISTENER)          \
     V(xdg_toplevel,                   PROXY_ATTR_HAS_LISTENER)          \
+    V(xdg_wm_base,                    PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_manager_v2,          PROXY_ATTR_NONE)                  \
+    V(zwp_tablet_pad_v2,              PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_seat_v2,             PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_tool_v2,             PROXY_ATTR_HAS_LISTENER)          \
-    V(zwp_tablet_pad_v2,              PROXY_ATTR_HAS_LISTENER)          \
-    V(zwp_tablet_v2,                  PROXY_ATTR_HAS_LISTENER)          \
-    V(wp_fractional_scale_manager_v1, PROXY_ATTR_NONE)                  \
-    V(wp_fractional_scale_v1,         PROXY_ATTR_HAS_LISTENER)
+    V(zwp_tablet_v2,                  PROXY_ATTR_HAS_LISTENER)
 #include <mvll/wayland/client/proxy.hpp>
 
 int main() {
@@ -32,10 +38,13 @@ int main() {
     auto registry = proxy{wl_display_get_registry(display.get())};
     proxy<wl_compositor> compositor;
     std::forward_list<proxy<wl_seat>> seats;
+    std::forward_list<proxy<wl_output>> outputs;
     proxy<wl_shm> shm;
     proxy<xdg_wm_base> shell;
     proxy<zwp_tablet_manager_v2> tablet_manager;
-    proxy<wp_fractional_scale_manager_v1> scale_manager;
+    proxy<wp_fractional_scale_manager_v1> scaler;
+    proxy<wp_viewporter> viewporter;
+    proxy<wp_presentation> presentation;
     registry.on<&wl_registry_listener::global>([&](wl_registry*  registry,
                                                    std::uint32_t name,
                                                    char const*   interface,
@@ -45,6 +54,9 @@ int main() {
         }
         else if (interface_name<wl_seat> == interface) {
             seats.emplace_front(registry_bind<wl_seat>(registry, name, version));
+        }
+        else if (interface_name<wl_output> == interface) {
+            outputs.emplace_front(registry_bind<wl_output>(registry, name, version));
         }
         else if (interface_name<wl_shm> == interface) {
             shm = registry_bind<wl_shm>(registry, name, version);
@@ -56,20 +68,32 @@ int main() {
             tablet_manager = registry_bind<zwp_tablet_manager_v2>(registry, name, version);
         }
         else if (interface_name<wp_fractional_scale_manager_v1> == interface) {
-            scale_manager = registry_bind<wp_fractional_scale_manager_v1>(registry, name, version);
+            scaler = registry_bind<wp_fractional_scale_manager_v1>(registry, name, version);
         }
-        std::cout << name << ":" << interface << std::endl;
+        else if (interface_name<wp_viewporter> == interface) {
+            viewporter = registry_bind<wp_viewporter>(registry, name, version);
+        }
+        else if (interface_name<wp_presentation> == interface) {
+            presentation = registry_bind<wp_presentation>(registry, name, version);
+        }
     });
     registry.on<&wl_registry_listener::global_remove>([&](wl_registry*, std::uint32_t name) noexcept {
-        std::erase_if(seats, [name](auto const& s) { return s.id() == name; });
+        std::erase_if(seats, [name](auto const& item) { return item.id() == name; });
+        std::erase_if(outputs, [name](auto const& item) { return item.id() == name; });
     });
     wl_display_roundtrip(display);
+    std::cout << "*** The first roundtrip has done." << std::endl;
+
+    std::uint32_t scale120 = 120;
+    std::size_t logical_cx = 640;
+    std::size_t logical_cy = 480;
+    std::size_t buffer_cx = 640 * scale120 / 120;
+    std::size_t buffer_cy = 480 * scale120 / 120;
 
     for (auto& seat : seats) {
         if (tablet_manager) {
             MVLL_CHECK(!seat.has_anchor());
-            auto& tablet_seat = seat.emplace_anchor(
-                proxy{zwp_tablet_manager_v2_get_tablet_seat(tablet_manager, seat)});
+            auto& tablet_seat = seat.emplace_anchor(proxy{zwp_tablet_manager_v2_get_tablet_seat(tablet_manager, seat)});
             MVLL_CHECK(tablet_seat);
             tablet_seat.on([] -> listener_fiblet<&zwp_tablet_seat_v2_listener::tablet_added> {
                     std::forward_list<proxy<zwp_tablet_v2>> tablets;
@@ -220,34 +244,53 @@ int main() {
             });
     }
     wl_display_roundtrip(display);
+    std::cout << "*** The second roundtrip has done." << std::endl;
 
     MVLL_CHECK(compositor);
     MVLL_CHECK(shm);
     MVLL_CHECK(shell);
+    MVLL_CHECK(viewporter);
     shell.on<&xdg_wm_base_listener::ping>([](xdg_wm_base* shell, std::uint32_t serial) noexcept {
+        std::cout << "base_pong: " << serial << std::endl;
         xdg_wm_base_pong(shell, serial);
     });
     auto surface = proxy{wl_compositor_create_surface(compositor)};
-    if (scale_manager) {
-        auto& scaler = scale_manager.emplace_anchor(
-            proxy{wp_fractional_scale_manager_v1_get_fractional_scale(scale_manager, surface)});
-        scaler.on<&wp_fractional_scale_v1_listener::preferred_scale>([](auto, std::uint32_t scale) {
-            std::cout << "preferred scale: " << scale << std::endl;
+    auto viewport = proxy{wp_viewporter_get_viewport(viewporter, surface)};
+    if (scaler) {
+        auto& scale = scaler.emplace_anchor(
+            proxy{wp_fractional_scale_manager_v1_get_fractional_scale(scaler, surface)});
+        scale.on<&wp_fractional_scale_v1_listener::preferred_scale>([&](auto, std::uint32_t scale) {
+            std::cout << "preferred_scale changed: " << scale120 << "->" << scale << std::endl;
+            scale120 = scale;
+            buffer_cx = logical_cx * scale120 / 120;
+            buffer_cy = logical_cy * scale120 / 120;
+            wp_viewport_set_destination(viewport, logical_cx, logical_cy);
+            //wl_surface_commit(surface); // T.B.D.
         });
     }
-
+    auto feedback = proxy{wp_presentation_feedback(presentation, surface)};
+    feedback.on<&wp_presentation_feedback_listener::presented>([&](struct wp_presentation_feedback*,
+                                                                   [[maybe_unused]] uint32_t tv_sec_hi,
+                                                                   [[maybe_unused]]uint32_t tv_sec_lo,
+                                                                   [[maybe_unused]]uint32_t tv_nsec,
+                                                                   uint32_t refresh,
+                                                                   [[maybe_unused]]uint32_t seq_hi,
+                                                                   [[maybe_unused]]uint32_t seq_lo,
+                                                                   [[maybe_unused]]uint32_t flags) {
+        std::cout << "presentation feedback refresh: " << refresh << std::endl;
+    });
+    feedback.on<&wp_presentation_feedback_listener::discarded>([&](struct wp_presentation_feedback*) {
+        std::cout << "presentation feedback discarded." << std::endl;
+    });
     auto xsurface = proxy{xdg_wm_base_get_xdg_surface(shell, surface)};
     xsurface.on<&xdg_surface_listener::configure>([](xdg_surface* xsurface, std::uint32_t serial) noexcept {
+        std::cout << "xsurface configured: " << serial << std::endl;
         xdg_surface_ack_configure(xsurface, serial);
     });
-
     auto toplevel = proxy{xdg_surface_get_toplevel(xsurface)};
     toplevel.on([&] MVLL_NOEXCEPT -> listener_fiblet<&xdg_toplevel_listener::configure> {
-        std::size_t scale = 1;
-        std::size_t cx = 640 * scale;
-        std::size_t cy = 480 * scale;
-        auto primary = shm_allocate_buffer(shm, cx, cy);
-        auto secondary = shm_allocate_buffer(shm, cx, cy);
+        auto primary = shm_allocate_buffer(shm, buffer_cx, buffer_cy);
+        auto secondary = shm_allocate_buffer(shm, buffer_cx, buffer_cy);
         auto release_callback = [&primary, &secondary](wl_buffer*) {
             std::swap(primary, secondary);
         };
@@ -260,12 +303,14 @@ int main() {
         // std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
         for (;;) {
             auto const& args = co_await wait_current;
-            auto const& [toplevel, h, w, states] = args;
-            cx = h * scale;
-            cy = w * scale;
-            if (cx * cy > 0) {
-                primary = shm_allocate_buffer(shm, cx, cy);
-                secondary = shm_allocate_buffer(shm, cx, cy);
+            auto const& [toplevel, w, h, states] = args;
+            logical_cx = w;
+            logical_cy = h;
+            buffer_cx = logical_cx * scale120 / 120;
+            buffer_cy = logical_cy * scale120 / 120;
+            if (buffer_cx * buffer_cy > 0) {
+                primary = shm_allocate_buffer(shm, buffer_cx, buffer_cy);
+                secondary = shm_allocate_buffer(shm, buffer_cx, buffer_cy);
                 primary_buffer.on<&wl_buffer_listener::release>(release_callback);
                 secondary_buffer.on<&wl_buffer_listener::release>(release_callback);
             }
@@ -275,8 +320,9 @@ int main() {
             }
             frame.on<&wl_callback_listener::done>([&](wl_callback*, std::uint32_t) MVLL_NOEXCEPT {
                 frame.rebind(wl_surface_frame(surface));
+                feedback.rebind(wp_presentation_feedback(presentation, surface));
                 wl_surface_attach(surface, primary_buffer, 0, 0);
-                wl_surface_damage_buffer(surface, 0, 0, cx, cy);
+                wl_surface_damage_buffer(surface, 0, 0, buffer_cx, buffer_cy);
                 wl_surface_commit(surface);
                 wl_display_flush(display);
             });
