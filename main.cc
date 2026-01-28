@@ -10,6 +10,7 @@
 #include <mvll/platform/linux.hpp>
 
 #include <mvll/wayland/client/proxy-pre.hpp>
+#include <wayland-client-protocol.h>
 #include <wp-fractional-scale-v1-client.h>
 #include <wp-presentation-client.h>
 #include <wp-viewporter-client.h>
@@ -84,6 +85,38 @@ int main() {
     wl_display_roundtrip(display);
     std::cout << "*** The first roundtrip has done." << std::endl;
 
+    using output_info = std::tuple<
+        event_traits<&wl_output_listener::name>::rest_args_tuple,
+        event_traits<&wl_output_listener::description>::rest_args_tuple,
+        event_traits<&wl_output_listener::mode>::rest_args_tuple,
+        event_traits<&wl_output_listener::scale>::rest_args_tuple,
+        event_traits<&wl_output_listener::geometry>::rest_args_tuple
+        >;
+    for (auto& output : outputs) {
+        output.fiblet() = [&] -> listener_fiblet<&wl_output_listener::done> {
+            output_info info;
+            for (;;) {
+                output.on<&wl_output_listener::name>([&](auto const& args) {
+                    std::get<0>(info) = args;
+                });
+                output.on<&wl_output_listener::description>([&](auto const& args) {
+                    std::get<1>(info) = args;
+                });
+                output.on<&wl_output_listener::mode>([&](auto const& args) {
+                    std::get<2>(info) = args;
+                });
+                output.on<&wl_output_listener::scale>([&](auto const& args) {
+                    std::get<3>(info) = args;
+                });
+                output.on<&wl_output_listener::geometry>([&](auto const& args) {
+                    std::get<4>(info) = args;
+                });
+                co_await wait_current;
+                std::cout << info << std::endl;
+            }
+        };
+    }
+
     std::uint32_t scale120 = 120;
     std::size_t logical_cx = 640;
     std::size_t logical_cy = 480;
@@ -92,156 +125,156 @@ int main() {
 
     for (auto& seat : seats) {
         if (tablet_manager) {
-            MVLL_CHECK(!seat.has_anchor());
-            auto& tablet_seat = seat.emplace_anchor(proxy{zwp_tablet_manager_v2_get_tablet_seat(tablet_manager, seat)});
+            MVLL_CHECK(!seat.anchor);
+            auto& tablet_seat = (seat.anchor = proxy{zwp_tablet_manager_v2_get_tablet_seat(tablet_manager, seat)});
             MVLL_CHECK(tablet_seat);
-            tablet_seat.on([] -> listener_fiblet<&zwp_tablet_seat_v2_listener::tablet_added> {
-                    std::forward_list<proxy<zwp_tablet_v2>> tablets;
-                    for (;;) {
-                        auto const& [seat, id] = co_await wait_current;
-                        auto tablet = proxy{id};
-                        std::cout << "tablet added: " << tablet << std::endl;
-                        tablet.on<&zwp_tablet_v2_listener::removed> ([&](zwp_tablet_v2* id) {
-                            tablets.remove(id);
-                            std::cout << "tablet removed: " << id << std::endl;
-                        });
-                        tablet.on<&zwp_tablet_v2_listener::name>([&](auto, auto name) {
-                            std::cout << "tablet name: " << name << std::endl;
-                        });
-                        tablet.on<&zwp_tablet_v2_listener::path> ([&](auto, auto path) {
-                            std::cout << "tablet path: " << path << std::endl;
-                        });
-                        tablets.emplace_front(std::move(tablet));
-                    }
-                });
-            tablet_seat.on([] -> listener_fiblet<&zwp_tablet_seat_v2_listener::pad_added> {
-                    std::forward_list<proxy<zwp_tablet_pad_v2>> tablet_pads;
-                    for (;;) {
-                        auto const& [seat, id] = co_await wait_current;
-                        auto tablet_pad = proxy{id};
-                        std::cout << "pad added: " << tablet_pad << std::endl;
-                        tablet_pad.on<&zwp_tablet_pad_v2_listener::removed>([&](zwp_tablet_pad_v2* id) {
-                            tablet_pads.remove(id);
-                            std::cout << "pad removed:" << id << std::endl;
-                        });
-                        tablet_pad.on<&zwp_tablet_pad_v2_listener::path> ([&](auto, auto path) {
-                            std::cout << "pad path: " << path << std::endl;
-                        });
-                        tablet_pads.emplace_front(std::move(tablet_pad));
-                    }
-                });
-            tablet_seat.on([] -> listener_fiblet<&zwp_tablet_seat_v2_listener::tool_added> {
-                    std::forward_list<proxy<zwp_tablet_tool_v2>> tablet_tools;
-                    for (;;) {
-                        auto const& [seat, id] = co_await wait_current;
-                        auto tablet_tool = proxy{id};
-                        std::cout << "tool added: " << tablet_tool << std::endl;
-                        tablet_tool.on<&zwp_tablet_tool_v2_listener::removed>([&](zwp_tablet_tool_v2* id) {
-                            tablet_tools.remove(id);
-                            std::cout << "tool removed: " << id << std::endl;
-                        });
-                        tablet_tools.emplace_front(std::move(tablet_tool));
-                    }
-                });
-        }
-        seat.on([] -> listener_fiblet<&wl_seat_listener::capabilities> {
-                proxy<wl_keyboard> keyboard;
-                proxy<wl_pointer> pointer;
-                proxy<wl_touch> touch;
+            tablet_seat.fiblet() = [] -> listener_fiblet<&zwp_tablet_seat_v2_listener::tablet_added> {
+                std::forward_list<proxy<zwp_tablet_v2>> tablets;
                 for (;;) {
-                    auto const& [seat, caps] = co_await wait_current;
-                    if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
-                        if (!keyboard) {
-                            keyboard = proxy{wl_seat_get_keyboard(seat)};
-                        }
-                        keyboard.on([] -> listener_fiblet<&wl_keyboard_listener::key> {
-                                for (;;) {
-                                    [[maybe_unused]] auto const& args = co_await wait_current;
-                                }
-                            });
-                        keyboard.on([] -> listener_fiblet<&wl_keyboard_listener::modifiers> {
-                                for (;;) {
-                                    [[maybe_unused]] auto const& args = co_await wait_current;
-                                }
-                            });
-                        keyboard.on([] -> listener_fiblet<&wl_keyboard_listener::repeat_info> {
-                                for (;;) {
-                                    [[maybe_unused]] auto const& args = co_await wait_current;
-                                }
-                            });
+                    auto const& [seat, id] = co_await wait_current;
+                    auto tablet = proxy{id};
+                    std::cout << "tablet added: " << tablet << std::endl;
+                    tablet.on<&zwp_tablet_v2_listener::removed> ([&](zwp_tablet_v2* id) {
+                        tablets.remove(id);
+                        std::cout << "tablet removed: " << id << std::endl;
+                    });
+                    tablet.on<&zwp_tablet_v2_listener::name>([&](auto, auto name) {
+                        std::cout << "tablet name: " << name << std::endl;
+                    });
+                    tablet.on<&zwp_tablet_v2_listener::path> ([&](auto, auto path) {
+                        std::cout << "tablet path: " << path << std::endl;
+                    });
+                    tablets.emplace_front(std::move(tablet));
+                }
+            };
+            tablet_seat.fiblet() = [] -> listener_fiblet<&zwp_tablet_seat_v2_listener::pad_added> {
+                std::forward_list<proxy<zwp_tablet_pad_v2>> tablet_pads;
+                for (;;) {
+                    auto const& [seat, id] = co_await wait_current;
+                    auto tablet_pad = proxy{id};
+                    std::cout << "pad added: " << tablet_pad << std::endl;
+                    tablet_pad.on<&zwp_tablet_pad_v2_listener::removed>([&](zwp_tablet_pad_v2* id) {
+                        tablet_pads.remove(id);
+                        std::cout << "pad removed:" << id << std::endl;
+                    });
+                    tablet_pad.on<&zwp_tablet_pad_v2_listener::path>([&](auto, auto path) {
+                        std::cout << "pad path: " << path << std::endl;
+                    });
+                    tablet_pads.emplace_front(std::move(tablet_pad));
+                }
+            };
+            tablet_seat.fiblet() = [] -> listener_fiblet<&zwp_tablet_seat_v2_listener::tool_added> {
+                std::forward_list<proxy<zwp_tablet_tool_v2>> tablet_tools;
+                for (;;) {
+                    auto const& [seat, id] = co_await wait_current;
+                    auto tablet_tool = proxy{id};
+                    std::cout << "tool added: " << tablet_tool << std::endl;
+                    tablet_tool.on<&zwp_tablet_tool_v2_listener::removed>([&](zwp_tablet_tool_v2* id) {
+                        tablet_tools.remove(id);
+                        std::cout << "tool removed: " << id << std::endl;
+                    });
+                    tablet_tools.emplace_front(std::move(tablet_tool));
+                }
+            };
+        }
+        seat.fiblet() = [] -> listener_fiblet<&wl_seat_listener::capabilities> {
+            proxy<wl_keyboard> keyboard;
+            proxy<wl_pointer> pointer;
+            proxy<wl_touch> touch;
+            for (;;) {
+                auto const& [seat, caps] = co_await wait_current;
+                if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
+                    if (!keyboard) {
+                        keyboard = proxy{wl_seat_get_keyboard(seat)};
                     }
-                    else {
-                        keyboard = {};
-                    }
-                    if (caps & WL_SEAT_CAPABILITY_POINTER) {
-                        if (!pointer) {
-                            pointer = proxy{wl_seat_get_pointer(seat)};
-                        }
-                        pointer.on([] -> listener_fiblet<&wl_pointer_listener::axis_value120> {
-                                for (;;) {
-                                    [[maybe_unused]] auto const& args = co_await wait_current;
-                                }
-                            });
-                    }
-                    else {
-                        pointer = {};
-                    }
-
-                    struct stroke {
-                        std::int32_t id;
-                        fiblet<versor<wl_fixed_t, 2>> coro;
-                    };
-                    std::forward_list<stroke> strokes;
-                    if (caps & WL_SEAT_CAPABILITY_TOUCH) {
-                        if (!touch) {
-                            touch = proxy{wl_seat_get_touch(seat)};
-                        }
-                        touch.on<&wl_touch_listener::down>([&](wl_touch*,
-                                                               std::uint32_t,
-                                                               std::uint32_t,
-                                                               wl_surface*,
-                                                               std::int32_t id,
-                                                               wl_fixed_t x,
-                                                               wl_fixed_t y) noexcept {
-                            strokes.emplace_front(
-                                stroke(id,
-                                       [](std::int32_t id) -> fiblet<versor<wl_fixed_t, 2>> {
-                                           for (;;) {
-                                               [[maybe_unused]] auto ret = co_yield {};
-                                               auto [x, y] = *static_cast<versor<wl_fixed_t, 2> const*>(ret);
-                                               std::cout << id << ": " << x << ',' << y << std::endl;
-                                           }
-                                       }(id)));
-                            std::cout << "start stroke #" << id << std::endl;
-                            versor<wl_fixed_t, 2> cur{x, y};
-                            strokes.front().coro.handle().resume();
-                            strokes.front().coro.push(&cur);
-                        });
-                        touch.on<&wl_touch_listener::up>([&](wl_touch*,
-                                                             std::uint32_t,
-                                                             std::uint32_t,
-                                                             std::int32_t id) noexcept {
-                            std::erase_if(strokes, [id](auto const& s) { return s.id == id; });
-                            std::cout << "remove stroke #" << id << std::endl;
-                        });
-                        touch.on<&wl_touch_listener::motion>([&](wl_touch*,
-                                                                 std::uint32_t,
-                                                                 std::int32_t id,
-                                                                 wl_fixed_t x,
-                                                                 wl_fixed_t y) noexcept {
-                            for (auto& stroke : strokes) {
-                                if (stroke.id == id) {
-                                    versor<wl_fixed_t, 2> cur{x, y};
-                                    stroke.coro.push(&cur);
-                                }
+                    keyboard.on([] -> listener_fiblet<&wl_keyboard_listener::key> {
+                            for (;;) {
+                                [[maybe_unused]] auto const& args = co_await wait_current;
                             }
                         });
-                    }
-                    else {
-                        touch = {};
-                    }
+                    keyboard.on([] -> listener_fiblet<&wl_keyboard_listener::modifiers> {
+                            for (;;) {
+                                [[maybe_unused]] auto const& args = co_await wait_current;
+                            }
+                        });
+                    keyboard.on([] -> listener_fiblet<&wl_keyboard_listener::repeat_info> {
+                            for (;;) {
+                                [[maybe_unused]] auto const& args = co_await wait_current;
+                            }
+                        });
                 }
-            });
+                else {
+                    keyboard = {};
+                }
+                if (caps & WL_SEAT_CAPABILITY_POINTER) {
+                    if (!pointer) {
+                        pointer = proxy{wl_seat_get_pointer(seat)};
+                    }
+                    pointer.on([] -> listener_fiblet<&wl_pointer_listener::axis_value120> {
+                            for (;;) {
+                                [[maybe_unused]] auto const& args = co_await wait_current;
+                            }
+                        });
+                }
+                else {
+                    pointer = {};
+                }
+
+                struct stroke {
+                    std::int32_t id;
+                    fiblet<versor<wl_fixed_t, 2>> coro;
+                };
+                std::forward_list<stroke> strokes;
+                if (caps & WL_SEAT_CAPABILITY_TOUCH) {
+                    if (!touch) {
+                        touch = proxy{wl_seat_get_touch(seat)};
+                    }
+                    touch.on<&wl_touch_listener::down>([&](wl_touch*,
+                                                           std::uint32_t,
+                                                           std::uint32_t,
+                                                           wl_surface*,
+                                                           std::int32_t id,
+                                                           wl_fixed_t x,
+                                                           wl_fixed_t y) noexcept {
+                        strokes.emplace_front(
+                            stroke(id,
+                                   [](std::int32_t id) -> fiblet<versor<wl_fixed_t, 2>> {
+                                       for (;;) {
+                                           [[maybe_unused]] auto ret = co_yield {};
+                                           auto [x, y] = *static_cast<versor<wl_fixed_t, 2> const*>(ret);
+                                           std::cout << id << ": " << x << ',' << y << std::endl;
+                                       }
+                                   }(id)));
+                        std::cout << "start stroke #" << id << std::endl;
+                        versor<wl_fixed_t, 2> cur{x, y};
+                        strokes.front().coro.handle().resume();
+                        strokes.front().coro.push(&cur);
+                    });
+                    touch.on<&wl_touch_listener::up>([&](wl_touch*,
+                                                         std::uint32_t,
+                                                         std::uint32_t,
+                                                         std::int32_t id) noexcept {
+                        std::erase_if(strokes, [id](auto const& s) { return s.id == id; });
+                        std::cout << "remove stroke #" << id << std::endl;
+                    });
+                    touch.on<&wl_touch_listener::motion>([&](wl_touch*,
+                                                             std::uint32_t,
+                                                             std::int32_t id,
+                                                             wl_fixed_t x,
+                                                             wl_fixed_t y) noexcept {
+                        for (auto& stroke : strokes) {
+                            if (stroke.id == id) {
+                                versor<wl_fixed_t, 2> cur{x, y};
+                                stroke.coro.push(&cur);
+                            }
+                        }
+                    });
+                }
+                else {
+                    touch = {};
+                }
+            }
+        };
     }
     wl_display_roundtrip(display);
     std::cout << "*** The second roundtrip has done." << std::endl;
@@ -288,7 +321,7 @@ int main() {
         xdg_surface_ack_configure(xsurface, serial);
     });
     auto toplevel = proxy{xdg_surface_get_toplevel(xsurface)};
-    toplevel.on([&] MVLL_NOEXCEPT -> listener_fiblet<&xdg_toplevel_listener::configure> {
+    toplevel.fiblet() = [&] MVLL_NOEXCEPT -> listener_fiblet<&xdg_toplevel_listener::configure> {
         auto primary = shm_allocate_buffer(shm, buffer_cx, buffer_cy);
         auto secondary = shm_allocate_buffer(shm, buffer_cx, buffer_cy);
         auto release_callback = [&primary, &secondary](wl_buffer*) {
@@ -327,7 +360,7 @@ int main() {
                 wl_display_flush(display);
             });
         }
-    });
+    };
     bool quit = false;
     toplevel.on<&xdg_toplevel_listener::close>([&](xdg_toplevel*) noexcept {
         quit = true;

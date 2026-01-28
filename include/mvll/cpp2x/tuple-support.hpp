@@ -51,25 +51,6 @@ namespace mvll::inline cpp2x
         struct quote {
             T x;
             constexpr quote(T x) : x{x} {}
-            template <class Ch, class Tr>
-            constexpr friend std::basic_ostream<Ch, Tr>& operator<<(std::basic_ostream<Ch, Tr>& output,
-                                                                    quote const& q) {
-                if constexpr (std::is_pointer_v<std::decay_t<T>>) {
-                    if (q.x == nullptr) {
-                        return output << "nil";
-                    }
-                }
-                if constexpr (std::is_convertible_v<T, std::basic_string_view<Ch, Tr>>) {
-                    (output.put(Ch{'"'}) << q.x).put(Ch{'"'});
-                }
-                else if (std::is_same_v<T, Ch>) {
-                    (output.put(Ch{'\''}) << q.x).put(Ch{'\''});
-                }
-                else {
-                    output << q.x;
-                }
-                return output;
-            }
         };
     } // ::internals
 
@@ -98,7 +79,7 @@ namespace mvll::inline cpp2x
      * The return type uses 'auto&' for conciseness over the traditional explicit type.
      * Output format is a lisp s-expression likes: (element1 element2 ...).
      */
-    template <class Ch, class Tr, mvll::tuple_like T>
+    template <class Ch, class Tr, tuple_like T>
     constexpr std::basic_ostream<Ch, Tr>& operator<<(std::basic_ostream<Ch, Tr>& output, T const& t) {
         output.put(Ch{'('});
         [&]<std::size_t... I>(std::index_sequence<I...>) {
@@ -109,6 +90,34 @@ namespace mvll::inline cpp2x
         output.put(Ch{')'});
         return output;
     }
+
+    namespace internals
+    {
+        template <class T, class Ch, class Tr>
+        constexpr std::basic_ostream<Ch, Tr>& operator<<(std::basic_ostream<Ch, Tr>& output,
+                                                         quote<T> const& q) {
+            using mvll::cpp2x::operator<<;
+            if constexpr (tuple_like<std::decay_t<T>>) {
+                return output << q.x;
+            }
+            if constexpr (std::is_pointer_v<std::decay_t<T>>) {
+                if (q.x == nullptr) {
+                    return output << "nil";
+                }
+            }
+            if constexpr (std::is_convertible_v<T, std::basic_string_view<Ch, Tr>>) {
+                (output.put(Ch{'"'}) << q.x).put(Ch{'"'});
+            }
+            else if (std::is_same_v<T, Ch>) {
+                (output.put(Ch{'\''}) << q.x).put(Ch{'\''});
+            }
+            else {
+                output << q.x;
+            }
+            return output;
+        }
+    } // ::internals
+
 } // ::mvll::cpp2x
 
 #endif // INCLUDE_MVLL_CPP2X_TUPLE_SUPPORT_HPP

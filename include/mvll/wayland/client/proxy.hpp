@@ -52,9 +52,13 @@ namespace mvll::inline wayland::inline client
 
     template <class Func, class Tuple>
     struct listener_action_traits {
-        static inline constexpr bool is_invocable = []<class... Args>(std::tuple<Args...>*) consteval noexcept {
+        static inline constexpr bool is_unpacked_invocable = []<class... Args>(std::tuple<Args...>*)
+            consteval noexcept
+        {
             return std::is_invocable_v<Func, Args...>;
         }(static_cast<Tuple*>(nullptr));
+        static inline constexpr bool is_tuple_invocable = std::is_invocable_v<Func, Tuple>;
+        static inline constexpr bool is_invocable = is_unpacked_invocable || is_tuple_invocable;
     };
     template <class Func, class Tuple>
     inline constexpr bool is_action_invocable_v = listener_action_traits<Func, Tuple>::is_invocable;
@@ -148,20 +152,20 @@ namespace mvll::inline wayland::inline client
     public:
         proxy_impl(std::nullptr_t = nullptr) noexcept
             : ptr_{nullptr, delete_proxy<T>}
-            , anchor_{} {}
+            , anchor{} {}
         proxy_impl(T* raw) MVLL_NOEXCEPT
             : ptr_{raw, delete_proxy<T>}
-            , anchor_{}
+            , anchor{}
             {
                 MVLL_CHECK(raw);
             }
         proxy_impl(proxy_impl&& other) noexcept
             : ptr_{other.ptr_.release(), delete_proxy<T>}
-            , anchor_{std::exchange(other.anchor_, {})} {}
+            , anchor{std::exchange(other.anchor, {})} {}
         proxy_impl& operator=(proxy_impl&& other) noexcept {
             if (this != &other) {
                 this->ptr_.reset(other.ptr_.release());
-                this->anchor_ = std::exchange(other.anchor_, {});
+                this->anchor = std::exchange(other.anchor, {});
             }
             return *this;
         }
@@ -177,10 +181,10 @@ namespace mvll::inline wayland::inline client
         }
 
     public:
-        [[nodiscard]] bool has_anchor() const noexcept { return static_cast<bool>(anchor_); }
+        [[nodiscard]] bool has_anchor() const noexcept { return static_cast<bool>(anchor); }
         template <is_boxable_type R>
         std::decay_t<R>& emplace_anchor(R&& src) {
-            return anchor_.emplace(std::forward<R>(src));
+            return anchor.emplace(std::forward<R>(src));
         }
 
     public:
@@ -192,7 +196,9 @@ namespace mvll::inline wayland::inline client
 
     private:
         unique_pointer<T> ptr_;
-        move_only_erased_box<> anchor_;
+
+    public:
+        move_only_erased_box<> anchor;
     };
 
     template <class> class proxy;
@@ -241,6 +247,26 @@ namespace mvll::inline wayland::inline client
 
     private:
         thunk_table<T> table_ = {};
+
+    public:
+        template <auto Member>
+        struct action_assigner {
+            proxy& self;
+            void operator=(auto&& func) {
+                self.template on<Member>(std::forward<decltype(func)>(func));
+            }
+        };
+        struct fiblet_assigner {
+            proxy& self;
+            void operator=(auto&& coro) {
+                self.on(std::forward<decltype(coro)>(coro));
+            }
+        };
+
+    public:
+        template <auto Member>
+        auto action() { return action_assigner<Member>{*this}; }
+        auto fiblet() { return fiblet_assigner{*this}; }
     };
 
     template <is_proxy T>

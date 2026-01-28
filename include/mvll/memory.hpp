@@ -26,8 +26,8 @@ namespace mvll::inline memory
         move_only_erased_box& operator=(move_only_erased_box const&) = delete;
 
         constexpr move_only_erased_box() noexcept = default;
-        template <class T>requires (!std::derived_from<std::decay_t<T>, move_only_erased_box<AllocTemplate>>
-                                    && is_boxable_type<T>)
+        template <class T> requires (!std::derived_from<std::decay_t<T>, move_only_erased_box<AllocTemplate>>
+                                     && is_boxable_type<T>)
         constexpr explicit move_only_erased_box(T&& src) {
             this->emplace(std::forward<T>(src));
         }
@@ -41,6 +41,11 @@ namespace mvll::inline memory
                 dtor = std::exchange(other.dtor, nullptr);
             }
             return *this;
+        }
+        template <class T> requires (!std::derived_from<std::decay_t<T>, move_only_erased_box<AllocTemplate>>
+                                     && is_boxable_type<T>)
+        constexpr std::decay_t<T>& operator=(T&& src) noexcept { // NOTE: the return type
+            return this->emplace(std::forward<T>(src));
         }
         constexpr void cleanup() noexcept {
             if (chunk && dtor) {
