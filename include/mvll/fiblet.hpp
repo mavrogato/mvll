@@ -25,27 +25,27 @@ namespace mvll
             }
             void return_void() const noexcept {}
             std::suspend_always initial_suspend() const noexcept { return {}; }
-            auto final_suspend() const noexcept {
-                struct final_awaiter {
-                    bool await_ready() const noexcept { return false; }
-                    void await_resume() const noexcept {}
-                    std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
-                        auto base_h = std::coroutine_handle<promise_type>::from_address(h.address());
-                        if (auto continuation = base_h.promise().continuation) {
-                            return continuation;
-                        }
-                        return std::noop_coroutine();
+
+            struct final_awaiter {
+                bool await_ready() const noexcept { return false; }
+                void await_resume() const noexcept {}
+                std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) noexcept {
+                    auto base_h = std::coroutine_handle<promise_type>::from_address(h.address());
+                    if (auto continuation = base_h.promise().continuation) {
+                        return continuation;
                     }
-                };
+                    return std::noop_coroutine();
+                }
+            };
+            auto final_suspend() const noexcept {
                 return final_awaiter{};
             }
+
             struct event_awaiter {
                 promise_type const& self;
                 bool await_ready() const noexcept { return false; }
                 std::coroutine_handle<> await_suspend(std::coroutine_handle<>) const noexcept {
-                    if (auto continuation = self.continuation) {
-                        return continuation;
-                    }
+                    if (self.continuation) return self.continuation;
                     return std::noop_coroutine();                    
                 }
                 void const* await_resume() const noexcept { return self.current_; }
@@ -53,17 +53,18 @@ namespace mvll
             auto await_transform(wait_current_tag) const noexcept {
                 return event_awaiter{*this};
             }
+
+            struct yield_awaiter {
+                promise_type& self;
+                bool await_ready() const noexcept { return false; }
+                void const* await_resume() noexcept { return self.current_; }
+                std::coroutine_handle<> await_suspend(std::coroutine_handle<>) const noexcept {
+                    if (self.continuation) return self.continuation;
+                    return std::noop_coroutine();
+                }
+            };
             auto yield_value(void const* yielded_val) noexcept {
                 this->current_ = yielded_val;
-                struct yield_awaiter {
-                    promise_type& self;
-                    bool await_ready() const noexcept { return false; }
-                    void const* await_resume() noexcept { return self.current_; }
-                    std::coroutine_handle<> await_suspend(std::coroutine_handle<>) noexcept {
-                        if (self.continuation) return self.continuation;
-                        return std::noop_coroutine();
-                    }
-                };
                 return yield_awaiter{*this};
             }
         };
@@ -127,13 +128,24 @@ namespace std
                     std::coroutine_handle<promise_type>::from_promise(*this),
                 };
             }
+
+            struct fiblet_event_awaiter : event_awaiter {
+                T const& await_resume() const noexcept {
+                    return *static_cast<T const*>(this->self.current_);
+                }
+            };
             auto await_transform(mvll::wait_current_tag) noexcept {
-                struct fiblet_event_awaiter : event_awaiter {
-                    T const& await_resume() const noexcept {
-                        return *static_cast<T const*>(this->self.current_);
-                    }
-                };
                 return fiblet_event_awaiter{{*this}};
+            }
+
+            struct fiblet_yield_awaiter : yield_awaiter {
+                T const& await_resume() noexcept {
+                    return *static_cast<T const*>(this->self.current_);
+                }
+            };
+            auto yield_value(T const& yielded_val) noexcept {
+                this->current_ = &yielded_val;
+                return fiblet_yield_awaiter{{*this}};
             }
         };
     };

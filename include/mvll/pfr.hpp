@@ -133,9 +133,9 @@ namespace mvll::inline pfr
     };
 
     template <auto Member,
-        typename member_pointer_traits<decltype (Member)>::member_type Mark
-    > requires (std::is_member_pointer_v<decltype (Member)> &&
-                std::is_aggregate_v<typename member_pointer_traits<decltype (Member)>::struct_type>)
+              typename member_pointer_traits<decltype (Member)>::member_type Mark
+              > requires (std::is_member_pointer_v<decltype (Member)> &&
+                          std::is_aggregate_v<typename member_pointer_traits<decltype (Member)>::struct_type>)
     [[nodiscard]] consteval std::uint32_t get_ordinal() noexcept {
         using struct_type = typename member_pointer_traits<decltype (Member)>::struct_type;
         constexpr struct_type prototype = []() consteval {
@@ -153,9 +153,9 @@ namespace mvll::inline pfr
     }
 
     template <auto Member,
-        typename member_pointer_traits<decltype (Member)>::member_type Mark
-    > requires (std::is_member_pointer_v<decltype (Member)> &&
-                std::is_aggregate_v<typename member_pointer_traits<decltype (Member)>::struct_type>)
+              typename member_pointer_traits<decltype (Member)>::member_type Mark
+              > requires (std::is_member_pointer_v<decltype (Member)> &&
+                          std::is_aggregate_v<typename member_pointer_traits<decltype (Member)>::struct_type>)
     inline constexpr std::uint32_t ordinal = [] consteval noexcept {
         return get_ordinal<Member, Mark>();
     }();

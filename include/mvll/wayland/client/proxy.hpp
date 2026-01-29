@@ -28,22 +28,22 @@ namespace mvll::inline wayland::inline client
         Func func;
         listener_action(Func&& func) : func{std::forward<Func>(func)} {}
         void push(void const* src) const {
-            using rest_args_tuple = event_traits<Member>::rest_args_tuple;
-            auto const& rest_args = *static_cast<rest_args_tuple const*>(src);
-            if constexpr (requires {this->func(rest_args);}) {
-                this->func(rest_args);
+            using actual_args_tuple = event_traits<Member>::actual_args_tuple;
+            auto const& actual_args = *static_cast<actual_args_tuple const*>(src);
+            if constexpr (requires {this->func(actual_args);}) {
+                this->func(actual_args);
             }
             else {
-                std::apply(this->func, rest_args);
+                std::apply(this->func, actual_args);
             }
         }
     };
 
     template <auto Member>
     struct listener_fiblet final
-        : fiblet<typename event_traits<Member>::rest_args_tuple>
+        : fiblet<typename event_traits<Member>::actual_args_tuple>
     {
-        using fiblet_type = fiblet<typename event_traits<Member>::rest_args_tuple>;
+        using fiblet_type = fiblet<typename event_traits<Member>::actual_args_tuple>;
         using fiblet_type::fiblet_type;
         void push(void const* src) const {
             fiblet_base::push(src);
@@ -79,7 +79,8 @@ namespace mvll::inline wayland::inline client
         struct table_entry {
             void* self;
             void (*pusher)(void const*, void const*);
-            move_only_erased_box<> cache;
+            move_only_erased_box<> func_cache;
+            move_only_erased_box<> args_cache;
         };
         using table_type = std::array<table_entry, SIZE>;
 
@@ -87,10 +88,12 @@ namespace mvll::inline wayland::inline client
         static inline listener_type<T> listener = []<std::size_t ...I>(std::index_sequence<I...>) noexcept {
             return listener_type<T> {
                 ([]<class ...Rest>(void* data, Rest... rest) {
-                    if (table_type const* table = static_cast<table_type const*>(data)) {
-                        if (table_entry const& entry = (*table)[I]; entry.self && entry.pusher) {
-                            auto rest_args = std::tuple{rest...};
-                            entry.pusher(entry.self, &rest_args);
+                    if (table_type* table = static_cast<table_type*>(data)) {
+                        table_entry& entry = (*table)[I];
+                        auto actual_args = std::tuple{rest...};
+                        entry.args_cache = actual_args;
+                        if (entry.self && entry.pusher) {
+                            entry.pusher(entry.self, &actual_args);
                         }
                     }
                 })...
@@ -98,26 +101,26 @@ namespace mvll::inline wayland::inline client
         }(std::make_index_sequence<SIZE>());
 
     public:
-        thunk_table() : table_{table_type{}} {}
+        thunk_table() : table_entries_{table_type{}} {}
 
     public:
         [[nodiscard]] std::int32_t start(T* proxy_raw) noexcept {
             return wl_proxy_add_listener(
                 reinterpret_cast<wl_proxy*>(proxy_raw),
                 reinterpret_cast<void(**)(void)>(&listener),
-                this->table_.get<table_type*>());
+                this->table_entries_.get<table_type*>());
         }
         template <auto Member, class Func, class ...InitialArgs>
         void add_fiblet(Func&& coro, InitialArgs&& ...init) noexcept {
             using DecayFunc = std::decay_t<Func>;
             using FibletType = listener_fiblet<Member>;
             constexpr std::size_t ordinal = event_traits<Member>::ordinal;
-            table_entry& entry = (*static_cast<table_type*>(table_))[ordinal];
+            table_entry& entry = (*static_cast<table_type*>(table_entries_))[ordinal];
             struct cache_entry {
                 DecayFunc antiopt_coro;
                 listener_fiblet<Member> flit;
             };
-            auto& cache = entry.cache.emplace(cache_entry{std::forward<Func>(coro), {}});
+            auto& cache = (entry.func_cache = cache_entry{std::forward<Func>(coro), {}});
             cache.flit = FibletType{(cache.antiopt_coro)(std::forward<InitialArgs>(init)...)};
             entry.self = &cache.flit;
             entry.pusher = [](void const* self, void const* args) {
@@ -130,16 +133,21 @@ namespace mvll::inline wayland::inline client
             using DecayFunc = std::decay_t<Func>;
             using ActionType = listener_action<Member, DecayFunc>;
             constexpr std::size_t ordinal = event_traits<Member>::ordinal;
-            table_entry& entry = (*static_cast<table_type*>(table_))[ordinal];
-            ActionType& cache = entry.cache.emplace(ActionType{std::forward<DecayFunc>(func)});
+            table_entry& entry = (*static_cast<table_type*>(table_entries_))[ordinal];
+            ActionType& cache = (entry.func_cache = ActionType{std::forward<DecayFunc>(func)});
             entry.self = &cache;
             entry.pusher = [](void const* self, void const* args) {
                 static_cast<ActionType const*>(self)->push(args);
             };
         }
+        template <auto Member>
+        auto const* peek() const noexcept {
+            using traits = event_traits<Member>;
+            return static_cast<traits::actual_args_tuple const*>(table_entries_[traits::ordinal].slot);
+        }
 
     private:
-        move_only_erased_box<> table_;
+        move_only_erased_box<> table_entries_;
     };
 
     template <is_proxy T>
@@ -241,12 +249,9 @@ namespace mvll::inline wayland::inline client
             MVLL_CHECK(this->get());
             using DecayFunc = std::decay_t<Func>;
             static_assert(std::is_same_v<typename event_traits<Member>::listener_type, listener_type<T>>);
-            static_assert(is_action_invocable_v<DecayFunc, typename event_traits<Member>::rest_args_tuple>);
+            static_assert(is_action_invocable_v<DecayFunc, typename event_traits<Member>::actual_args_tuple>);
             table_.template add_action<Member>(std::forward<Func>(func));
         }
-
-    private:
-        thunk_table<T> table_ = {};
 
     public:
         template <auto Member>
@@ -267,6 +272,13 @@ namespace mvll::inline wayland::inline client
         template <auto Member>
         auto action() { return action_assigner<Member>{*this}; }
         auto fiblet() { return fiblet_assigner{*this}; }
+
+    public:
+        template <auto Member>
+        auto const* peek() const noexcept { return table_.peek(); }
+
+    private:
+        thunk_table<T> table_ = {};
     };
 
     template <is_proxy T>
@@ -294,9 +306,9 @@ namespace std
 {
     template <auto Member, class ...Args>
     struct coroutine_traits<mvll::listener_fiblet<Member>, Args...>
-         : coroutine_traits<mvll::fiblet<typename mvll::event_traits<Member>::rest_args_tuple>, Args...> {
+         : coroutine_traits<mvll::fiblet<typename mvll::event_traits<Member>::actual_args_tuple>, Args...> {
          using base_traits = coroutine_traits<
-             mvll::fiblet<typename mvll::event_traits<Member>::rest_args_tuple>, Args...>;
+             mvll::fiblet<typename mvll::event_traits<Member>::actual_args_tuple>, Args...>;
          struct promise_type : base_traits::promise_type {
              mvll::listener_fiblet<Member> get_return_object() noexcept {
                 return mvll::listener_fiblet<Member> {

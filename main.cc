@@ -86,30 +86,30 @@ int main() {
     std::cout << "*** The first roundtrip has done." << std::endl;
 
     using output_info = std::tuple<
-        event_traits<&wl_output_listener::name>::rest_args_tuple,
-        event_traits<&wl_output_listener::description>::rest_args_tuple,
-        event_traits<&wl_output_listener::mode>::rest_args_tuple,
-        event_traits<&wl_output_listener::scale>::rest_args_tuple,
-        event_traits<&wl_output_listener::geometry>::rest_args_tuple
+        event_traits<&wl_output_listener::name>::payload_tuple,
+        event_traits<&wl_output_listener::description>::payload_tuple,
+        event_traits<&wl_output_listener::mode>::payload_tuple,
+        event_traits<&wl_output_listener::scale>::payload_tuple,
+        event_traits<&wl_output_listener::geometry>::payload_tuple
         >;
     for (auto& output : outputs) {
         output.fiblet() = [&] -> listener_fiblet<&wl_output_listener::done> {
             output_info info;
             for (;;) {
-                output.on<&wl_output_listener::name>([&](auto const& args) {
-                    std::get<0>(info) = args;
+                output.on<&wl_output_listener::name>([&](wl_output*, auto... rest) {
+                    std::get<0>(info) = std::tuple{rest...};
                 });
-                output.on<&wl_output_listener::description>([&](auto const& args) {
-                    std::get<1>(info) = args;
+                output.on<&wl_output_listener::description>([&](wl_output*, auto... rest) {
+                    std::get<1>(info) = std::tuple{rest...};
                 });
-                output.on<&wl_output_listener::mode>([&](auto const& args) {
-                    std::get<2>(info) = args;
+                output.on<&wl_output_listener::mode>([&](wl_output*, auto... rest) {
+                    std::get<2>(info) = std::tuple{rest...};
                 });
-                output.on<&wl_output_listener::scale>([&](auto const& args) {
-                    std::get<3>(info) = args;
+                output.on<&wl_output_listener::scale>([&](wl_output*, auto... rest) {
+                    std::get<3>(info) = std::tuple{rest...};
                 });
-                output.on<&wl_output_listener::geometry>([&](auto const& args) {
-                    std::get<4>(info) = args;
+                output.on<&wl_output_listener::geometry>([&](wl_output*, auto... rest) {
+                    std::get<4>(info) = std::tuple{rest...};
                 });
                 co_await wait_current;
                 std::cout << info << std::endl;
@@ -241,7 +241,7 @@ int main() {
                                    [](std::int32_t id) -> fiblet<versor<wl_fixed_t, 2>> {
                                        for (;;) {
                                            [[maybe_unused]] auto ret = co_yield {};
-                                           auto [x, y] = *static_cast<versor<wl_fixed_t, 2> const*>(ret);
+                                           auto [x, y] = ret;
                                            std::cout << id << ": " << x << ',' << y << std::endl;
                                        }
                                    }(id)));

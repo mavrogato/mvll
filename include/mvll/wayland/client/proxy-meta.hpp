@@ -11,10 +11,9 @@
 #include <wayland-client-protocol.h>
 #include <wayland-client.h>
 
+#include <mvll/memory.hpp>
 #include <mvll/pfr.hpp>
 #include <mvll/wayland/client/proxy-pre.hpp>
-
-
 #ifdef MVLL_PROXY_LIST
 #define MVLL_PROXY_LIST_MASTER(V)  \
     MVLL_PROXY_LIST_BUILTIN(V)     \
@@ -108,30 +107,26 @@ namespace mvll::inline wayland::inline client
 
     template <class T> concept is_proxy = ((identifier<T>) < proxy_class_id::NOF_PROXIES);
 
-    namespace internals
-    {
-        template <is_proxy T> struct proxy_to_listener_impl;
-        template <class L> struct listener_to_proxy_impl;
+    template <is_proxy T> struct proxy_to_listener;
+    template <class L> struct listener_to_proxy;
 #define MVLL_INTERN_PROXY_LISTENER(CLASS, ATTR)                         \
-        MVLL_WHEN(                                                      \
-            ATTR,                                                       \
-            template <> struct proxy_to_listener_impl<struct CLASS> {   \
-                using type = CLASS##_listener;                          \
-            };                                                          \
-            template <> struct listener_to_proxy_impl<CLASS##_listener> { \
-                using type = struct CLASS;                               \
-            };                                                          \
+    MVLL_WHEN(                                                          \
+        ATTR,                                                           \
+        template <> struct proxy_to_listener<struct CLASS> {            \
+            using type = CLASS##_listener;                              \
+        };                                                              \
+        template <> struct listener_to_proxy<CLASS##_listener> {        \
+            using type = struct CLASS;                                  \
+        };                                                              \
         )
-        MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_LISTENER)
+    MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_LISTENER)
 #undef MVLL_INTERN_PROXY_LISTENER
-    }
     template <class T> concept is_proxy_observable = is_proxy<T> && requires {
-        typename internals::proxy_to_listener_impl<T>::type;
+        typename proxy_to_listener<T>::type;
     };
-
-    template <is_proxy_observable T> using listener_type = internals::proxy_to_listener_impl<T>::type;
+    template <is_proxy_observable T> using listener_type = proxy_to_listener<T>::type;
     template <class L> concept is_listener = requires {
-        typename internals::listener_to_proxy_impl<L>::type;
+        typename listener_to_proxy<L>::type;
     };
 
     template <is_proxy T> inline constexpr wl_interface const *const interface_ptr = nullptr;
@@ -164,34 +159,43 @@ namespace mvll::inline wayland::inline client
                                      data);
     }
 
-    template <class T> struct event_signature_traits;
-    template <class... Rest>
-    struct event_signature_traits<void (*)(void*, Rest...)> {
+    template <class> struct event_signature_traits;
+    template <is_proxy T, class... Rest>
+    struct event_signature_traits<void (*)(void*, T*, Rest...)> {
         using return_type = void;
-        static inline constexpr std::size_t rest_arity = sizeof...(Rest);
-        static inline constexpr std::size_t arity = 1 + rest_arity;
-        using rest_args_tuple = std::tuple<Rest...>;
-        using args_tuple = std::tuple<void*, Rest...>;
-        template <std::size_t N> using rest_arg_t = std::tuple_element_t<N, rest_args_tuple>;
-        template <std::size_t N> using arg_t = std::tuple_element_t<N, args_tuple>;
-    };
-    template <class T> concept is_event_signature = requires { event_signature_traits<T>::arity; };
+        static inline constexpr std::size_t payload_size = sizeof... (Rest);
+        static inline constexpr std::size_t actual_arity = 1 + payload_size;
+        static inline constexpr std::size_t formal_arity = 1 + actual_arity;
+        using payload_tuple = std::tuple<Rest...>;
+        using actual_args_tuple = std::tuple<T*, Rest...>;
+        using formal_args_tuple = std::tuple<void*, T*, Rest...>;
+        template <std::size_t N> using payload_element_type = std::tuple_element_t<N, payload_tuple>;
+        template <std::size_t N> using actual_element_type = std::tuple_element_t<N, actual_args_tuple>;
+        template <std::size_t N> using formal_element_type = std::tuple_element_t<N, formal_args_tuple>;
 
-    namespace internals
-    {
-        template <class, auto> struct event_traits_impl;
-        template <is_listener L, is_event_signature M, M L::*Member>
-        struct event_traits_impl<M L::*, Member> {
-            using proxy_type = internals::listener_to_proxy_impl<L>::type;
-            using listener_type = std::remove_pointer_t<L>;
-            using member_type = M;
-            using rest_args_tuple = typename event_signature_traits<M>::rest_args_tuple;
-            static inline constexpr std::uint32_t ordinal = [] consteval noexcept {
-                return pfr::get_ordinal<Member, [](auto...){}>();
-            }();
-        };
-    }
-    template <auto Member> using event_traits = internals::event_traits_impl<decltype (Member), Member>;
+        move_only_erased_box<> reside(Rest&&... payloads) {
+            std::tuple {
+                ([]<class E>(E&& payload) {
+                    if constexpr (std::is_same_v<std::decay_t<E>, char const*>) {
+                    }
+                    else if constexpr (std::is_same_v<std::decay_t<E>, wl_array*>) {
+                    }
+                    return std::forward<E>(payload);
+                }(std::forward<Rest>(payloads)))...
+            };
+            return {};
+        }
+    };
+    template <class T> concept is_event_signature = requires { event_signature_traits<T>::actual_arity; };
+
+    template <auto> struct event_traits;
+    template <is_listener L, is_event_signature M, M L::*Member>
+    struct event_traits<Member> : event_signature_traits<M> {
+        using proxy_type = listener_to_proxy<L>::type;
+        using listener_type = std::remove_pointer_t<L>;
+        using member_type = M;
+        static inline constexpr std::uint32_t ordinal = pfr::ordinal<Member, [](auto...){}>;
+    };
 
 } // ::mvll::wayland::client
 
