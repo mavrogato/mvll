@@ -6,7 +6,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
+#include <tuple>
+#include <type_traits>
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
 #include <wayland-client.h>
@@ -162,28 +165,81 @@ namespace mvll::inline wayland::inline client
     template <class> struct event_signature_traits;
     template <is_proxy T, class... Rest>
     struct event_signature_traits<void (*)(void*, T*, Rest...)> {
-        using return_type = void;
+        static_assert((std::is_trivially_copyable_v<Rest> && ...),
+                      "All elements must be trivially copyable for raw memory placement.");
+        using proxy_type = T;
+        using listener_type = proxy_to_listener<T>;
         static inline constexpr std::size_t payload_size = sizeof... (Rest);
         static inline constexpr std::size_t actual_arity = 1 + payload_size;
         static inline constexpr std::size_t formal_arity = 1 + actual_arity;
-        using payload_tuple = std::tuple<Rest...>;
+        using payload_args_tuple = std::tuple<Rest...>;
         using actual_args_tuple = std::tuple<T*, Rest...>;
         using formal_args_tuple = std::tuple<void*, T*, Rest...>;
-        template <std::size_t N> using payload_element_type = std::tuple_element_t<N, payload_tuple>;
+        template <std::size_t N> using payload_element_type = std::tuple_element_t<N, payload_args_tuple>;
         template <std::size_t N> using actual_element_type = std::tuple_element_t<N, actual_args_tuple>;
         template <std::size_t N> using formal_element_type = std::tuple_element_t<N, formal_args_tuple>;
 
-        move_only_erased_box<> reside(Rest&&... payloads) {
-            std::tuple {
-                ([]<class E>(E&& payload) {
-                    if constexpr (std::is_same_v<std::decay_t<E>, char const*>) {
+        using payload_flat_tuple = std::tuple<
+            std::conditional_t<std::is_same_v<Rest, char const*>,
+                               std::string_view,
+                               std::conditional_t<std::is_same_v<Rest, wl_array*>,
+                                                  std::span<std::byte>, Rest>>...>;
+        template <std::size_t N> using flatten_element_type = std::tuple_element_t<N, payload_flat_tuple>;
+
+        static inline move_only_erased_box<> to_flatten(std::tuple<Rest...>&& payloads) {
+            size_t count = alloc_block::count(sizeof (std::decay_t<payload_flat_tuple>));
+            std::array<std::size_t, std::tuple_size_v<payload_args_tuple>> deep_offsets{};
+            [&]<std::size_t ...I>(std::index_sequence<I...>) {
+                (([&] {
+                    if constexpr (std::is_same_v<std::tuple_element_t<I, payload_args_tuple>, char const*>) {
+                        if (char const* from = std::get<I>(payloads)) {
+                            deep_offsets[I] = count * alloc_block::DEFAULT_NEW_ALIGNMENT;
+                            count += alloc_block::count(std::char_traits<char>::length(from) + 1);
+                        }
                     }
-                    else if constexpr (std::is_same_v<std::decay_t<E>, wl_array*>) {
+                    else if constexpr (std::is_same_v<std::tuple_element_t<I, payload_args_tuple>, wl_array*>) {
+                        if (wl_array* from = std::get<I>(payloads)) {
+                            deep_offsets[I] = count * alloc_block::DEFAULT_NEW_ALIGNMENT;
+                            count += alloc_block::count(from->size);
+                        }
                     }
-                    return std::forward<E>(payload);
-                }(std::forward<Rest>(payloads)))...
-            };
-            return {};
+                }()), ...);
+            }(std::make_index_sequence<std::tuple_size_v<payload_args_tuple>>());
+            move_only_erased_box<> box;
+            std::span<std::byte> view = box.alloc_blob(alloc_block::DEFAULT_NEW_ALIGNMENT * count);
+            auto& flatten = *(new (view.data()) payload_flat_tuple{});
+            [&]<std::size_t ...I>(std::index_sequence<I...>) {
+                (([&] {
+                    if constexpr (std::is_same_v<std::tuple_element_t<I, payload_args_tuple>, char const*>) {
+                        if (char const* from = std::get<I>(payloads)) {
+                            char* to = reinterpret_cast<char*>(view.data()) + deep_offsets[I];
+                            std::copy_n(from,
+                                        std::char_traits<char>::length(from) + 1,
+                                        to);
+                            std::get<I>(flatten) = std::string_view{to};
+                        }
+                        else {
+                            std::get<I>(flatten) = {};
+                        }
+                    }
+                    else if constexpr (std::is_same_v<std::tuple_element_t<I, payload_args_tuple>, wl_array*>) {
+                        if (wl_array const* from = std::get<I>(payloads)) {
+                            std::byte* to = view.data() + deep_offsets[I];
+                            std::copy_n(static_cast<std::byte const*>(from->data),
+                                        std::get<I>(payloads)->size,
+                                        to);
+                            std::get<I>(flatten) = std::span<std::byte>{to, std::get<I>(payloads)->size};
+                        }
+                        else {
+                            std::get<I>(flatten) = {};
+                        }
+                    }
+                    else {
+                        std::get<I>(flatten) = std::get<I>(payloads);
+                    }
+                }()), ...);
+            }(std::make_index_sequence<std::tuple_size_v<payload_args_tuple>>());
+            return box;
         }
     };
     template <class T> concept is_event_signature = requires { event_signature_traits<T>::actual_arity; };
@@ -196,7 +252,6 @@ namespace mvll::inline wayland::inline client
         using member_type = M;
         static inline constexpr std::uint32_t ordinal = pfr::ordinal<Member, [](auto...){}>;
     };
-
 } // ::mvll::wayland::client
 
 #endif /*INCLUDE_MVLL_WAYLAND_CLIENT_PROXY_META_HPP*/

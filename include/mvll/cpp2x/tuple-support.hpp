@@ -18,6 +18,7 @@
 
 #include <concepts>
 #include <iosfwd>
+#include <span>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -88,6 +89,23 @@ namespace mvll::inline cpp2x
             ((output << sep << internals::quote{get<I>(t)}, sep[0] = Ch{' '}), ...);
         }(std::make_index_sequence<std::tuple_size_v<T>>());
         output.put(Ch{')'});
+        return output;
+    }
+
+    // T.B.D.
+    template <class Ch, class Tr>
+    std::basic_ostream<Ch, Tr>& operator<<(std::basic_ostream<Ch, Tr>& output, std::span<std::byte> const& x) {
+        output.put('(');
+        for (bool init = true; auto item : x) {
+            if (init) {
+                init = false;
+            }
+            else {
+                output << ' ';
+            }
+            output << static_cast<int>(item);
+        }
+        output.put(')');
         return output;
     }
 

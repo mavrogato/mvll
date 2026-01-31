@@ -80,18 +80,19 @@ namespace mvll::inline wayland::inline client
             void* self;
             void (*pusher)(void const*, void const*);
             move_only_erased_box<> func_cache;
-            move_only_erased_box<> args_cache;
+            move_only_erased_box<> payload_cache;
         };
         using table_type = std::array<table_entry, SIZE>;
 
     private:
         static inline listener_type<T> listener = []<std::size_t ...I>(std::index_sequence<I...>) noexcept {
             return listener_type<T> {
-                ([]<class ...Rest>(void* data, Rest... rest) {
+                ([]<class ...Rest>(void* data, T* raw, Rest ...rest) {
+                    using traits = event_signature_traits<void (*)(void*, T*, Rest...)>;
                     if (table_type* table = static_cast<table_type*>(data)) {
                         table_entry& entry = (*table)[I];
-                        auto actual_args = std::tuple{rest...};
-                        entry.args_cache = actual_args;
+                        auto actual_args = std::tuple{raw, rest...};
+                        entry.payload_cache = traits::to_flatten(std::tuple{rest...});
                         if (entry.self && entry.pusher) {
                             entry.pusher(entry.self, &actual_args);
                         }
@@ -143,7 +144,8 @@ namespace mvll::inline wayland::inline client
         template <auto Member>
         auto const* peek() const noexcept {
             using traits = event_traits<Member>;
-            return static_cast<traits::actual_args_tuple const*>(table_entries_[traits::ordinal].slot);
+            return (*static_cast<table_type const*>(table_entries_))[traits::ordinal]
+                .payload_cache.template get<typename traits::payload_flat_tuple>();
         }
 
     private:
@@ -275,7 +277,7 @@ namespace mvll::inline wayland::inline client
 
     public:
         template <auto Member>
-        auto const* peek() const noexcept { return table_.peek(); }
+        auto const* peek() const noexcept { return table_.template peek<Member>(); }
 
     private:
         thunk_table<T> table_ = {};

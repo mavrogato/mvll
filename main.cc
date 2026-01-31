@@ -28,6 +28,9 @@
     V(xdg_wm_base,                    PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_manager_v2,          PROXY_ATTR_NONE)                  \
     V(zwp_tablet_pad_v2,              PROXY_ATTR_HAS_LISTENER)          \
+    V(zwp_tablet_pad_group_v2,        PROXY_ATTR_HAS_LISTENER)          \
+    V(zwp_tablet_pad_ring_v2,         PROXY_ATTR_HAS_LISTENER)          \
+    V(zwp_tablet_pad_strip_v2,        PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_seat_v2,             PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_tool_v2,             PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_v2,                  PROXY_ATTR_HAS_LISTENER)
@@ -58,6 +61,15 @@ int main() {
         }
         else if (interface_name<wl_output> == interface) {
             outputs.emplace_front(registry_bind<wl_output>(registry, name, version));
+            auto& output = outputs.front();
+            output.action<&wl_output_listener::done>() = [&](auto) {
+                std::cout << output << std::endl;
+                std::cout << std::tuple(*output.peek<&wl_output_listener::name>(),
+                                        *output.peek<&wl_output_listener::description>(),
+                                        *output.peek<&wl_output_listener::mode>(),
+                                        *output.peek<&wl_output_listener::scale>(),
+                                        *output.peek<&wl_output_listener::geometry>()) << std::endl;
+            };
         }
         else if (interface_name<wl_shm> == interface) {
             shm = registry_bind<wl_shm>(registry, name, version);
@@ -85,38 +97,6 @@ int main() {
     wl_display_roundtrip(display);
     std::cout << "*** The first roundtrip has done." << std::endl;
 
-    using output_info = std::tuple<
-        event_traits<&wl_output_listener::name>::payload_tuple,
-        event_traits<&wl_output_listener::description>::payload_tuple,
-        event_traits<&wl_output_listener::mode>::payload_tuple,
-        event_traits<&wl_output_listener::scale>::payload_tuple,
-        event_traits<&wl_output_listener::geometry>::payload_tuple
-        >;
-    for (auto& output : outputs) {
-        output.fiblet() = [&] -> listener_fiblet<&wl_output_listener::done> {
-            output_info info;
-            for (;;) {
-                output.on<&wl_output_listener::name>([&](wl_output*, auto... rest) {
-                    std::get<0>(info) = std::tuple{rest...};
-                });
-                output.on<&wl_output_listener::description>([&](wl_output*, auto... rest) {
-                    std::get<1>(info) = std::tuple{rest...};
-                });
-                output.on<&wl_output_listener::mode>([&](wl_output*, auto... rest) {
-                    std::get<2>(info) = std::tuple{rest...};
-                });
-                output.on<&wl_output_listener::scale>([&](wl_output*, auto... rest) {
-                    std::get<3>(info) = std::tuple{rest...};
-                });
-                output.on<&wl_output_listener::geometry>([&](wl_output*, auto... rest) {
-                    std::get<4>(info) = std::tuple{rest...};
-                });
-                co_await wait_current;
-                std::cout << info << std::endl;
-            }
-        };
-    }
-
     std::uint32_t scale120 = 120;
     std::size_t logical_cx = 640;
     std::size_t logical_cy = 480;
@@ -127,53 +107,90 @@ int main() {
         if (tablet_manager) {
             MVLL_CHECK(!seat.anchor);
             auto& tablet_seat = (seat.anchor = proxy{zwp_tablet_manager_v2_get_tablet_seat(tablet_manager, seat)});
-            MVLL_CHECK(tablet_seat);
             tablet_seat.fiblet() = [] -> listener_fiblet<&zwp_tablet_seat_v2_listener::tablet_added> {
                 std::forward_list<proxy<zwp_tablet_v2>> tablets;
                 for (;;) {
-                    auto const& [seat, id] = co_await wait_current;
-                    auto tablet = proxy{id};
-                    std::cout << "tablet added: " << tablet << std::endl;
-                    tablet.on<&zwp_tablet_v2_listener::removed> ([&](zwp_tablet_v2* id) {
-                        tablets.remove(id);
-                        std::cout << "tablet removed: " << id << std::endl;
+                    auto const& [seat, new_tablet] = co_await wait_current;
+                    tablets.emplace_front(new_tablet);
+                    auto& tablet = tablets.front();
+                    tablet.on<&zwp_tablet_v2_listener::removed> ([&](zwp_tablet_v2* tablet) {
+                        tablets.remove(tablet);
+                        std::cout << "tablet removed: " << tablet << std::endl;
                     });
-                    tablet.on<&zwp_tablet_v2_listener::name>([&](auto, auto name) {
-                        std::cout << "tablet name: " << name << std::endl;
+                    tablet.on<&zwp_tablet_v2_listener::done>([&](auto) {
+                        std::cout << tablet << std::endl;
+                        std::cout << std::tuple(*tablet.peek<&zwp_tablet_v2_listener::id>(),
+                                                *tablet.peek<&zwp_tablet_v2_listener::name>(),
+                                                *tablet.peek<&zwp_tablet_v2_listener::path>()) << std::endl;
                     });
-                    tablet.on<&zwp_tablet_v2_listener::path> ([&](auto, auto path) {
-                        std::cout << "tablet path: " << path << std::endl;
-                    });
-                    tablets.emplace_front(std::move(tablet));
                 }
             };
             tablet_seat.fiblet() = [] -> listener_fiblet<&zwp_tablet_seat_v2_listener::pad_added> {
                 std::forward_list<proxy<zwp_tablet_pad_v2>> tablet_pads;
                 for (;;) {
-                    auto const& [seat, id] = co_await wait_current;
-                    auto tablet_pad = proxy{id};
-                    std::cout << "pad added: " << tablet_pad << std::endl;
-                    tablet_pad.on<&zwp_tablet_pad_v2_listener::removed>([&](zwp_tablet_pad_v2* id) {
-                        tablet_pads.remove(id);
-                        std::cout << "pad removed:" << id << std::endl;
+                    auto const& [seat, new_pad] = co_await wait_current;
+                    tablet_pads.emplace_front(new_pad);
+                    auto& pad = tablet_pads.front();
+                    auto& pad_groups = (pad.anchor = std::forward_list<proxy<zwp_tablet_pad_group_v2>>());
+                    pad.on<&zwp_tablet_pad_v2_listener::removed>([&](zwp_tablet_pad_v2* pad) {
+                        tablet_pads.remove(pad);
+                        std::cout << "pad removed:" << pad << std::endl;
                     });
-                    tablet_pad.on<&zwp_tablet_pad_v2_listener::path>([&](auto, auto path) {
-                        std::cout << "pad path: " << path << std::endl;
+                    pad.on<&zwp_tablet_pad_v2_listener::group>([&](auto, zwp_tablet_pad_group_v2* new_group) {
+                        pad_groups.emplace_front(new_group);
+                        auto& group = pad_groups.front();
+                        auto& rings_and_strips = (group.anchor = std::pair<
+                                                  std::forward_list<proxy<zwp_tablet_pad_ring_v2>>,
+                                                  std::forward_list<proxy<zwp_tablet_pad_strip_v2>>>());
+                        group.on<&zwp_tablet_pad_group_v2_listener::ring>([&](auto,
+                                                                              zwp_tablet_pad_ring_v2* new_ring) {
+                            rings_and_strips.first.emplace_front(new_ring);
+                            auto& ring = rings_and_strips.first.front();
+                            std::cout << "ring: " << ring << std::endl;
+                        });
+                        group.on<&zwp_tablet_pad_group_v2_listener::strip>([&](auto,
+                                                                               zwp_tablet_pad_strip_v2* new_strip) {
+                            rings_and_strips.second.emplace_front(new_strip);
+                            auto& strip = rings_and_strips.second.front();
+                            std::cout << "strip: " << strip << std::endl;
+                        });
+                        group.on<&zwp_tablet_pad_group_v2_listener::done>([&](auto) {
+                            std::cout << group << std::endl;
+                            std::cout <<
+                                std::tuple(group.peek<&zwp_tablet_pad_group_v2_listener::ring>(),
+                                           group.peek<&zwp_tablet_pad_group_v2_listener::strip>(),
+                                           *group.peek<&zwp_tablet_pad_group_v2_listener::buttons>(),
+                                           *group.peek<&zwp_tablet_pad_group_v2_listener::modes>()) << std::endl;
+                        });
                     });
-                    tablet_pads.emplace_front(std::move(tablet_pad));
+                    pad.on<&zwp_tablet_pad_v2_listener::done>([&](auto) {
+                        std::cout << pad << std::endl;
+                        std::cout << std::tuple(*pad.peek<&zwp_tablet_pad_v2_listener::buttons>(),
+                                                *pad.peek<&zwp_tablet_pad_v2_listener::path>()) << std::endl;
+                        for (auto& group : pad_groups) {
+                            std::cout << group << std::endl;
+                        }
+                    });
                 }
             };
             tablet_seat.fiblet() = [] -> listener_fiblet<&zwp_tablet_seat_v2_listener::tool_added> {
                 std::forward_list<proxy<zwp_tablet_tool_v2>> tablet_tools;
                 for (;;) {
-                    auto const& [seat, id] = co_await wait_current;
-                    auto tablet_tool = proxy{id};
-                    std::cout << "tool added: " << tablet_tool << std::endl;
-                    tablet_tool.on<&zwp_tablet_tool_v2_listener::removed>([&](zwp_tablet_tool_v2* id) {
-                        tablet_tools.remove(id);
-                        std::cout << "tool removed: " << id << std::endl;
+                    auto const& [seat, new_tool] = co_await wait_current;
+                    tablet_tools.emplace_front(new_tool);
+                    auto& tool = tablet_tools.front();
+                    tool.on<&zwp_tablet_tool_v2_listener::removed>([&](zwp_tablet_tool_v2* tool) {
+                        tablet_tools.remove(tool);
+                        std::cout << "tool removed: " << tool << std::endl;
                     });
-                    tablet_tools.emplace_front(std::move(tablet_tool));
+                    tool.on<&zwp_tablet_tool_v2_listener::done>([&](auto) {
+                        std::cout << tool << std::endl;
+                        std::cout << std::tuple(*tool.peek<&zwp_tablet_tool_v2_listener::capability>(),
+                                                *tool.peek<&zwp_tablet_tool_v2_listener::type>(),
+                                                *tool.peek<&zwp_tablet_tool_v2_listener::hardware_id_wacom>(),
+                                                *tool.peek<&zwp_tablet_tool_v2_listener::hardware_serial>()
+                            ) << std::endl;
+                    });
                 }
             };
         }
@@ -303,7 +320,7 @@ int main() {
     }
     auto feedback = proxy{wp_presentation_feedback(presentation, surface)};
     feedback.on<&wp_presentation_feedback_listener::presented>([&](struct wp_presentation_feedback*,
-                                                                   [[maybe_unused]] uint32_t tv_sec_hi,
+                                                                   [[maybe_unused]]uint32_t tv_sec_hi,
                                                                    [[maybe_unused]]uint32_t tv_sec_lo,
                                                                    [[maybe_unused]]uint32_t tv_nsec,
                                                                    uint32_t refresh,
@@ -336,6 +353,9 @@ int main() {
         // std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
         for (;;) {
             auto const& args = co_await wait_current;
+            if (auto ptr = toplevel.peek<&xdg_toplevel_listener::configure>()) {
+                std::cout << "configure payloads: " << *ptr << std::endl;
+            }
             auto const& [toplevel, w, h, states] = args;
             logical_cx = w;
             logical_cy = h;
@@ -361,15 +381,11 @@ int main() {
             });
         }
     };
-    bool quit = false;
-    toplevel.on<&xdg_toplevel_listener::close>([&](xdg_toplevel*) noexcept {
-        quit = true;
-    });
     xdg_toplevel_set_app_id(toplevel, "mvll");
 
     wl_surface_commit(surface);
     while (-1 != wl_display_dispatch(display)) {
-        if (quit) break;
+        if (toplevel.peek<&xdg_toplevel_listener::close>()) break;
     }
     return 0;
 }
