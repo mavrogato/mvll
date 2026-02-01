@@ -70,6 +70,7 @@ namespace mvll::inline memory
             cleanup();
         }
 
+        [[nodiscard]] constexpr std::size_t size() const noexcept { return size_; }
         [[nodiscard]] constexpr explicit operator bool() const noexcept {
             return data_ != nullptr;
         }
@@ -142,7 +143,6 @@ namespace mvll::inline memory
         std::size_t size_ = 0;
         void* data_ = nullptr;
         void (*release_)(void*, std::size_t) noexcept = nullptr;
-
     };
 } // ::mvll::memory
 

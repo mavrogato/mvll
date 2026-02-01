@@ -20,6 +20,7 @@ find_library(HERSHEY_LIBRARY hersheyfont)
 set(HERSHEY_DATA_DIR "/usr/share/harshey-fonts") #!!!
 
 #############################################################################
+pkg_check_modules(XKBCOMMON REQUIRED xkbcommon)
 pkg_check_modules(WaylandProtocol REQUIRED wayland-protocols>=1.38)
 pkg_get_variable(WaylandProtocolPath wayland-protocols pkgdatadir)
 
@@ -102,6 +103,7 @@ target_link_libraries(mvll PRIVATE
   wayland-client
   wayland-protocols-mvll
   ${HERSHEY_LIBRARY}
+  ${XKBCOMMON_LIBRARIES}
 )
 
 #############################################################################

@@ -92,7 +92,7 @@ namespace mvll::inline wayland::inline client
                     if (table_type* table = static_cast<table_type*>(data)) {
                         table_entry& entry = (*table)[I];
                         auto actual_args = std::tuple{raw, rest...};
-                        entry.payload_cache = traits::to_flatten(std::tuple{rest...});
+                        traits::to_flatten(entry.payload_cache, std::tuple{rest...});
                         if (entry.self && entry.pusher) {
                             entry.pusher(entry.self, &actual_args);
                         }
@@ -144,7 +144,7 @@ namespace mvll::inline wayland::inline client
         template <auto Member>
         auto const* peek() const noexcept {
             using traits = event_traits<Member>;
-            return (*static_cast<table_type const*>(table_entries_))[traits::ordinal]
+            return (*(table_entries_.template get<table_type>()))[traits::ordinal]
                 .payload_cache.template get<typename traits::payload_flat_tuple>();
         }
 
@@ -269,15 +269,16 @@ namespace mvll::inline wayland::inline client
                 self.on(std::forward<decltype(coro)>(coro));
             }
         };
-
-    public:
         template <auto Member>
         auto action() { return action_assigner<Member>{*this}; }
         auto fiblet() { return fiblet_assigner{*this}; }
 
     public:
         template <auto Member>
-        auto const* peek() const noexcept { return table_.template peek<Member>(); }
+        requires std::is_same_v<typename event_traits<Member>::listener_type, listener_type<T>>
+        auto const* peek() const noexcept {
+            return table_.template peek<Member>();
+        }
 
     private:
         thunk_table<T> table_ = {};
@@ -309,10 +310,10 @@ namespace std
     template <auto Member, class ...Args>
     struct coroutine_traits<mvll::listener_fiblet<Member>, Args...>
          : coroutine_traits<mvll::fiblet<typename mvll::event_traits<Member>::actual_args_tuple>, Args...> {
-         using base_traits = coroutine_traits<
-             mvll::fiblet<typename mvll::event_traits<Member>::actual_args_tuple>, Args...>;
-         struct promise_type : base_traits::promise_type {
-             mvll::listener_fiblet<Member> get_return_object() noexcept {
+        using base_traits = coroutine_traits<
+            mvll::fiblet<typename mvll::event_traits<Member>::actual_args_tuple>, Args...>;
+        struct promise_type : base_traits::promise_type {
+            mvll::listener_fiblet<Member> get_return_object() noexcept {
                 return mvll::listener_fiblet<Member> {
                     std::coroutine_handle<promise_type>::from_promise(*this),
                 };

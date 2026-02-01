@@ -57,10 +57,10 @@ namespace mvll::platform::inline nix
         using difference_type = std::ptrdiff_t;
 
     public:
-        unique_mmap() = delete;
         unique_mmap(unique_mmap const&) = delete;
         unique_mmap& operator=(unique_mmap const&) = delete;
 
+        unique_mmap() = default;
         explicit unique_mmap(void* target,
                              size_t size,
                              int prot = PROT_READ | PROT_WRITE,
@@ -98,6 +98,7 @@ namespace mvll::platform::inline nix
 
     public:
         [[nodiscard]] size_type size() const noexcept { return size_; }
+        [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
         [[nodiscard]] size_type size_in_bytes() const noexcept { return size() * sizeof (T); }
         [[nodiscard]] const_pointer data() const noexcept { return addr_; }
         [[nodiscard]] pointer data() noexcept { return addr_; }
@@ -124,7 +125,7 @@ namespace mvll::platform::inline nix
 
     private:
         std::size_t size_ = 0;
-        T* addr_ = MAP_FAILED;
+        T* addr_ = static_cast<T*>(MAP_FAILED);
     };
 
 } // ::mvll::platform::nix

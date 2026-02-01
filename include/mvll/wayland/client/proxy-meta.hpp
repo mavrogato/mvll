@@ -186,7 +186,7 @@ namespace mvll::inline wayland::inline client
                                                   std::span<std::byte>, Rest>>...>;
         template <std::size_t N> using flatten_element_type = std::tuple_element_t<N, payload_flat_tuple>;
 
-        static inline move_only_erased_box<> to_flatten(std::tuple<Rest...>&& payloads) {
+        static inline void to_flatten(move_only_erased_box<>& box, std::tuple<Rest...>&& payloads) {
             size_t count = alloc_block::count(sizeof (std::decay_t<payload_flat_tuple>));
             std::array<std::size_t, std::tuple_size_v<payload_args_tuple>> deep_offsets{};
             [&]<std::size_t ...I>(std::index_sequence<I...>) {
@@ -205,14 +205,16 @@ namespace mvll::inline wayland::inline client
                     }
                 }()), ...);
             }(std::make_index_sequence<std::tuple_size_v<payload_args_tuple>>());
-            move_only_erased_box<> box;
-            std::span<std::byte> view = box.alloc_blob(alloc_block::DEFAULT_NEW_ALIGNMENT * count);
-            auto& flatten = *(new (view.data()) payload_flat_tuple{});
+            if (box.size() < alloc_block::DEFAULT_NEW_ALIGNMENT * count) {
+                box.alloc_blob(alloc_block::DEFAULT_NEW_ALIGNMENT * count);
+            }
+            std::byte* data = box.template get<std::byte>();
+            auto& flatten = *(new (data) payload_flat_tuple{});
             [&]<std::size_t ...I>(std::index_sequence<I...>) {
                 (([&] {
                     if constexpr (std::is_same_v<std::tuple_element_t<I, payload_args_tuple>, char const*>) {
                         if (char const* from = std::get<I>(payloads)) {
-                            char* to = reinterpret_cast<char*>(view.data()) + deep_offsets[I];
+                            char* to = reinterpret_cast<char*>(data) + deep_offsets[I];
                             std::copy_n(from,
                                         std::char_traits<char>::length(from) + 1,
                                         to);
@@ -224,7 +226,7 @@ namespace mvll::inline wayland::inline client
                     }
                     else if constexpr (std::is_same_v<std::tuple_element_t<I, payload_args_tuple>, wl_array*>) {
                         if (wl_array const* from = std::get<I>(payloads)) {
-                            std::byte* to = view.data() + deep_offsets[I];
+                            std::byte* to = data + deep_offsets[I];
                             std::copy_n(static_cast<std::byte const*>(from->data),
                                         std::get<I>(payloads)->size,
                                         to);
@@ -239,7 +241,6 @@ namespace mvll::inline wayland::inline client
                     }
                 }()), ...);
             }(std::make_index_sequence<std::tuple_size_v<payload_args_tuple>>());
-            return box;
         }
     };
     template <class T> concept is_event_signature = requires { event_signature_traits<T>::actual_arity; };
