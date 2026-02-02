@@ -46,7 +46,7 @@
 
 namespace mvll::inline wayland::inline client
 {
-    template <class T> concept is_defined = requires { sizeof (T); };
+    template <class> class proxy;
 
     enum class proxy_class_id : std::uint32_t {
 #define MVLL_INTERN_PROXY_ID(CLASS, ATTR)       \

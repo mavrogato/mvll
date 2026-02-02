@@ -127,11 +127,11 @@ int main() {
                         if (!pointer) {
                             pointer = proxy{wl_seat_get_pointer(seat)};
                         }
-                        pointer.on([] -> listener_fiblet<&wl_pointer_listener::axis_value120> {
-                                for (;;) {
-                                    [[maybe_unused]] auto const& args = co_await wait_current;
-                                }
-                            });
+                        pointer.fiblet() = [](auto&) -> listener_fiblet<&wl_pointer_listener::axis_value120> {
+                            for (;;) {
+                                [[maybe_unused]] auto const& args = co_await wait_current;
+                            }
+                        };
                     }
                     else {
                         pointer = {};
@@ -230,7 +230,7 @@ int main() {
                 if (seat.anchor) break;
                 auto& tablet_seat =
                     (seat.anchor = proxy{zwp_tablet_manager_v2_get_tablet_seat(tablet_manager, seat)});
-                tablet_seat.fiblet() = [] -> listener_fiblet<&zwp_tablet_seat_v2_listener::tablet_added> {
+                tablet_seat.fiblet() = [](auto&) -> listener_fiblet<&zwp_tablet_seat_v2_listener::tablet_added> {
                     std::forward_list<proxy<zwp_tablet_v2>> tablets;
                     for (;;) {
                         auto const& [seat, new_tablet] = co_await wait_current;
@@ -250,7 +250,7 @@ int main() {
                         });
                     }
                 };
-                tablet_seat.fiblet() = [] -> listener_fiblet<&zwp_tablet_seat_v2_listener::pad_added> {
+                tablet_seat.fiblet() = [](auto&) -> listener_fiblet<&zwp_tablet_seat_v2_listener::pad_added> {
                     std::forward_list<proxy<zwp_tablet_pad_v2>> tablet_pads;
                     for (;;) {
                         auto const& [seat, new_pad] = co_await wait_current;
@@ -300,7 +300,7 @@ int main() {
                         });
                     }
                 };
-                tablet_seat.fiblet() = [] -> listener_fiblet<&zwp_tablet_seat_v2_listener::tool_added> {
+                tablet_seat.fiblet() = [](auto&) -> listener_fiblet<&zwp_tablet_seat_v2_listener::tool_added> {
                     std::forward_list<proxy<zwp_tablet_tool_v2>> tablet_tools;
                     for (;;) {
                         auto const& [seat, new_tool] = co_await wait_current;
@@ -404,7 +404,7 @@ int main() {
         xdg_surface_ack_configure(xsurface, serial);
     });
     auto toplevel = proxy{xdg_surface_get_toplevel(xsurface)};
-    toplevel.fiblet() = [&] MVLL_NOEXCEPT -> listener_fiblet<&xdg_toplevel_listener::configure> {
+    toplevel.fiblet() = [&] -> listener_fiblet<&xdg_toplevel_listener::configure> {
         auto primary = shm_allocate_buffer(shm, buffer_cx, buffer_cy);
         auto secondary = shm_allocate_buffer(shm, buffer_cx, buffer_cy);
         auto release_callback = [&primary, &secondary](wl_buffer*) {

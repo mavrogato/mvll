@@ -74,6 +74,8 @@ namespace mvll::inline wayland::inline client
 
     template <is_proxy_observable T>
     class thunk_table final {
+        friend class proxy<T>;
+
     public:
         static inline constexpr std::size_t SIZE = pfr::count_members<listener_type<T>>();
         struct table_entry {
@@ -102,21 +104,23 @@ namespace mvll::inline wayland::inline client
         }(std::make_index_sequence<SIZE>());
 
     public:
-        thunk_table() : table_entries_{table_type{}} {}
+        thunk_table(proxy<T>* proxy)
+            : proxy_{proxy}
+            , erased_table_{table_type{}} {}
 
     public:
         [[nodiscard]] std::int32_t start(T* proxy_raw) noexcept {
             return wl_proxy_add_listener(
                 reinterpret_cast<wl_proxy*>(proxy_raw),
                 reinterpret_cast<void(**)(void)>(&listener),
-                this->table_entries_.get<table_type*>());
+                this->erased_table_.get<table_type*>());
         }
         template <auto Member, class Func, class ...InitialArgs>
         void add_fiblet(Func&& coro, InitialArgs&& ...init) noexcept {
             using DecayFunc = std::decay_t<Func>;
             using FibletType = listener_fiblet<Member>;
             constexpr std::size_t ordinal = event_traits<Member>::ordinal;
-            table_entry& entry = (*static_cast<table_type*>(table_entries_))[ordinal];
+            table_entry& entry = (*static_cast<table_type*>(erased_table_))[ordinal];
             struct cache_entry {
                 DecayFunc antiopt_coro;
                 listener_fiblet<Member> flit;
@@ -134,7 +138,7 @@ namespace mvll::inline wayland::inline client
             using DecayFunc = std::decay_t<Func>;
             using ActionType = listener_action<Member, DecayFunc>;
             constexpr std::size_t ordinal = event_traits<Member>::ordinal;
-            table_entry& entry = (*static_cast<table_type*>(table_entries_))[ordinal];
+            table_entry& entry = (*static_cast<table_type*>(erased_table_))[ordinal];
             ActionType& cache = (entry.func_cache = ActionType{std::forward<DecayFunc>(func)});
             entry.self = &cache;
             entry.pusher = [](void const* self, void const* args) {
@@ -144,12 +148,13 @@ namespace mvll::inline wayland::inline client
         template <auto Member>
         auto const* peek() const noexcept {
             using traits = event_traits<Member>;
-            return (*(table_entries_.template get<table_type>()))[traits::ordinal]
+            return (*(erased_table_.get<table_type>()))[traits::ordinal]
                 .payload_cache.template get<typename traits::payload_flat_tuple>();
         }
 
     private:
-        move_only_erased_box<> table_entries_;
+        proxy<T>* proxy_; // T.B.D.
+        move_only_erased_box<> erased_table_;
     };
 
     template <is_proxy T>
@@ -211,7 +216,6 @@ namespace mvll::inline wayland::inline client
         move_only_erased_box<> anchor;
     };
 
-    template <class> class proxy;
     template <class T> proxy(T*) -> proxy<T>;
     template <is_proxy T>
     class proxy<T> : public proxy_impl<T> {
@@ -223,12 +227,28 @@ namespace mvll::inline wayland::inline client
     public:
         proxy(std::nullptr_t = nullptr)
             : proxy_impl<T>{}
-            , table_{}
+            , table_{this}
             {}
         proxy(T* raw)
             : proxy_impl<T>{raw}
-            , table_{}
+            , table_{this}
             { MVLL_CHECK(-1 != table_.start(this->get())); }
+
+        proxy(proxy&& other) noexcept
+            : proxy_impl<T>{std::exchange<proxy_impl<T>>(other, {})}
+            , table_{std::exchange(other.table_, {nullptr})}
+            {
+                table_.proxy_ = this;
+            }
+
+        proxy& operator=(proxy&& other) noexcept {
+            if (this != &other) {
+                proxy_impl<T>::operator=(std::exchange<proxy_impl<T>>(other, {}));
+                table_ = std::exchange(other.table_, {nullptr});
+                table_.proxy_ = this;
+            }
+            return *this;
+        }
 
     public:
         void rebind(T* raw) MVLL_NOEXCEPT {
@@ -242,6 +262,7 @@ namespace mvll::inline wayland::inline client
         void on(Func&& coro, InitialArgs&&... init) {
             MVLL_CHECK(this->get());
             using DecayFunc = std::decay_t<Func>;
+            static_assert(std::is_invocable_v<DecayFunc, InitialArgs...>);
             constexpr auto Member = member_from_fiblet_v<DecayFunc, InitialArgs...>;
             static_assert(std::is_same_v<typename event_traits<Member>::listener_type, listener_type<T>>);
             table_.template add_fiblet<Member>(std::forward<Func>(coro), std::forward<InitialArgs>(init)...);
@@ -263,14 +284,24 @@ namespace mvll::inline wayland::inline client
                 self.template on<Member>(std::forward<decltype(func)>(func));
             }
         };
-        struct fiblet_assigner {
-            proxy& self;
-            void operator=(auto&& coro) {
-                self.on(std::forward<decltype(coro)>(coro));
-            }
-        };
         template <auto Member>
         auto action() { return action_assigner<Member>{*this}; }
+
+        struct fiblet_assigner {
+            proxy& self;
+            template <class Func>
+            void operator=(Func&& coro) {
+                if constexpr (std::is_invocable_v<Func, proxy&>) {
+                    self.on(std::forward<Func>(coro), self);
+                }
+                else if constexpr (std::is_invocable_v<Func>) {
+                    self.on(std::forward<Func>(coro));
+                }
+                else {
+                    static_assert("Unsupported fiblet signature (please use proxy::on)");
+                }
+            }
+        };
         auto fiblet() { return fiblet_assigner{*this}; }
 
     public:
@@ -302,7 +333,6 @@ namespace mvll::inline wayland::inline client
         auto buffer = proxy{wl_shm_pool_create_buffer(pool.get(), 0, cx, cy, bypp * cx, format)};
         return std::tuple{std::move(fd), std::move(buffer), std::move(data)};
     }
-
 } // ::mvll::wayland::client
 
 namespace std
