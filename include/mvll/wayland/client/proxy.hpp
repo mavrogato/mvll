@@ -1,6 +1,8 @@
 #ifndef INCLUDE_MVLL_WAYLAND_CLIENT_PROXY_HPP
 #define INCLUDE_MVLL_WAYLAND_CLIENT_PROXY_HPP
 
+#include <mvll/error-handling.hpp>
+
 #include <array>
 #include <coroutine>
 #include <iosfwd>
@@ -81,7 +83,8 @@ namespace mvll::inline wayland::inline client
         struct table_entry {
             void* self;
             void (*pusher)(void const*, void const*);
-            move_only_erased_box<> func_cache;
+            move_only_erased_box<> action_cache;
+            move_only_erased_box<> fiblet_cache;
             move_only_erased_box<> payload_cache;
         };
         using table_type = std::array<table_entry, SIZE>;
@@ -95,7 +98,10 @@ namespace mvll::inline wayland::inline client
                         table_entry& entry = (*table)[I];
                         auto actual_args = std::tuple{raw, rest...};
                         traits::to_flatten(entry.payload_cache, std::tuple{rest...});
-                        if (entry.self && entry.pusher) {
+                        if (entry.action_cache) {
+                            entry.pusher(entry.self, &actual_args);
+                        }
+                        else if (entry.fiblet_cache) {
                             entry.pusher(entry.self, &actual_args);
                         }
                     }
@@ -122,10 +128,10 @@ namespace mvll::inline wayland::inline client
             constexpr std::size_t ordinal = event_traits<Member>::ordinal;
             table_entry& entry = (*static_cast<table_type*>(erased_table_))[ordinal];
             struct cache_entry {
-                DecayFunc antiopt_coro;
+                DecayFunc coro;
                 listener_fiblet<Member> flit;
             };
-            auto& cache = (entry.func_cache = cache_entry{std::forward<Func>(coro), {}});
+            auto& cache = (entry.fiblet_cache = cache_entry{std::forward<Func>(coro), {}});
             cache.flit = FibletType{(cache.antiopt_coro)(std::forward<InitialArgs>(init)...)};
             entry.self = &cache.flit;
             entry.pusher = [](void const* self, void const* args) {
@@ -139,7 +145,7 @@ namespace mvll::inline wayland::inline client
             using ActionType = listener_action<Member, DecayFunc>;
             constexpr std::size_t ordinal = event_traits<Member>::ordinal;
             table_entry& entry = (*static_cast<table_type*>(erased_table_))[ordinal];
-            ActionType& cache = (entry.func_cache = ActionType{std::forward<DecayFunc>(func)});
+            ActionType& cache = (entry.action_cache = ActionType{std::forward<DecayFunc>(func)});
             entry.self = &cache;
             entry.pusher = [](void const* self, void const* args) {
                 static_cast<ActionType const*>(self)->push(args);
