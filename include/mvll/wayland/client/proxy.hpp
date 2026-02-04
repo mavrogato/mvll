@@ -132,7 +132,7 @@ namespace mvll::inline wayland::inline client
                 listener_fiblet<Member> flit;
             };
             auto& cache = (entry.fiblet_cache = cache_entry{std::forward<Func>(coro), {}});
-            cache.flit = FibletType{(cache.antiopt_coro)(std::forward<InitialArgs>(init)...)};
+            cache.flit = FibletType{(cache.coro)(std::forward<InitialArgs>(init)...)};
             entry.self = &cache.flit;
             entry.pusher = [](void const* self, void const* args) {
                 static_cast<FibletType const*>(self)->push(args);

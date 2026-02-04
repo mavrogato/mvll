@@ -62,9 +62,8 @@ namespace mvll::inline wayland::inline client
     {
         template <proxy_class_id ID> struct proxy_type_impl;
 #define MVLL_INTERN_PROXY_TYPE(CLASS, ATTR)                             \
-        template <> struct proxy_type_impl<proxy_class_id::CLASS##_id> { \
-            using type = struct CLASS;                                  \
-        };
+        template <> struct proxy_type_impl<proxy_class_id::CLASS##_id>  \
+            : std::type_identity<struct CLASS> {};
         MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_TYPE)
 #undef MVLL_INTERN_PROXY_TYPE
     }
@@ -115,12 +114,10 @@ namespace mvll::inline wayland::inline client
 #define MVLL_INTERN_PROXY_LISTENER(CLASS, ATTR)                         \
     MVLL_WHEN(                                                          \
         ATTR,                                                           \
-        template <> struct proxy_to_listener<struct CLASS> {            \
-            using type = CLASS##_listener;                              \
-        };                                                              \
-        template <> struct listener_to_proxy<CLASS##_listener> {        \
-            using type = struct CLASS;                                  \
-        };                                                              \
+        template <> struct proxy_to_listener<struct CLASS>              \
+        : std::type_identity<CLASS##_listener> {};                      \
+        template <> struct listener_to_proxy<CLASS##_listener>          \
+        : std::type_identity<struct CLASS> {};                          \
         )
     MVLL_PROXY_LIST_MASTER(MVLL_INTERN_PROXY_LISTENER)
 #undef MVLL_INTERN_PROXY_LISTENER
@@ -169,8 +166,8 @@ namespace mvll::inline wayland::inline client
                       "All elements must be trivially copyable for raw memory placement.");
         using proxy_type = T;
         using listener_type = proxy_to_listener<T>;
-        static inline constexpr std::size_t payload_size = sizeof... (Rest);
-        static inline constexpr std::size_t actual_arity = 1 + payload_size;
+        static inline constexpr std::size_t payload_arity = sizeof... (Rest);
+        static inline constexpr std::size_t actual_arity = 1 + payload_arity;
         static inline constexpr std::size_t formal_arity = 1 + actual_arity;
         using payload_args_tuple = std::tuple<Rest...>;
         using actual_args_tuple = std::tuple<T*, Rest...>;
@@ -179,15 +176,14 @@ namespace mvll::inline wayland::inline client
         template <std::size_t N> using actual_element_type = std::tuple_element_t<N, actual_args_tuple>;
         template <std::size_t N> using formal_element_type = std::tuple_element_t<N, formal_args_tuple>;
 
-        using payload_flat_tuple = std::tuple<
-            std::conditional_t<std::is_same_v<Rest, char const*>,
-                               std::string_view,
-                               std::conditional_t<std::is_same_v<Rest, wl_array*>,
-                                                  std::span<std::byte>, Rest>>...>;
+        template <class U> struct flatten_rule : std::type_identity<U> {};
+        template <> struct flatten_rule<char const*> : std::type_identity<std::string_view> {};
+        template <> struct flatten_rule<wl_array*> : std::type_identity<std::span<std::byte>> {};
+        using payload_flat_tuple = std::tuple<typename flatten_rule<Rest>::type...>;
         template <std::size_t N> using flatten_element_type = std::tuple_element_t<N, payload_flat_tuple>;
 
         static inline void to_flatten(move_only_erased_box<>& box, std::tuple<Rest...>&& payloads) {
-            size_t count = alloc_block::count(sizeof (std::decay_t<payload_flat_tuple>));
+            size_t count = alloc_block::count(sizeof (payload_flat_tuple));
             std::array<std::size_t, std::tuple_size_v<payload_args_tuple>> deep_offsets{};
             [&]<std::size_t ...I>(std::index_sequence<I...>) {
                 (([&] {

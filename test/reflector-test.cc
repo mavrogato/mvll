@@ -1,49 +1,47 @@
 
 #include <mvll/wayland/client/reflector.hpp>
 
-#include <iostream>
-
 #include <mvll/cpp2x/tuple-support.hpp>
 
 #include <catch2/catch_all.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <type_traits>
 
-    struct any_type {
-        template <class T>
-        constexpr operator T() const noexcept;
-    };
+    // struct any_type {
+    //     template <class T>
+    //     constexpr operator T() const noexcept;
+    // };
 
-    template <class T>
-    concept aggregate = std::is_aggregate_v<T>;
+    // template <class T>
+    // concept aggregate = std::is_aggregate_v<T>;
 
-    template <class T, std::size_t N>
-    concept aggregate_initializable = aggregate<T> && requires {
-        []<std::size_t... I>(std::index_sequence<I...>) -> decltype(T{ ((void)I, any_type{})... }) {
-            return {};
-        }(std::make_index_sequence<N>{});
-    };
+    // template <class T, std::size_t N>
+    // concept aggregate_initializable = aggregate<T> && requires {
+    //     []<std::size_t... I>(std::index_sequence<I...>) -> decltype(T{ ((void)I, any_type{})... }) {
+    //         return {};
+    //     }(std::make_index_sequence<N>{});
+    // };
 
-    template <class T>
-    consteval std::size_t count_members() {
-        if constexpr (aggregate_initializable<T, 16>) return 16;
-        else if constexpr (aggregate_initializable<T, 15>) return 15;
-        else if constexpr (aggregate_initializable<T, 14>) return 14;
-        else if constexpr (aggregate_initializable<T, 13>) return 13;
-        else if constexpr (aggregate_initializable<T, 12>) return 12;
-        else if constexpr (aggregate_initializable<T, 11>) return 11;
-        else if constexpr (aggregate_initializable<T, 10>) return 10;
-        else if constexpr (aggregate_initializable<T, 9>) return 9;
-        else if constexpr (aggregate_initializable<T, 8>) return 8;
-        else if constexpr (aggregate_initializable<T, 7>) return 7;
-        else if constexpr (aggregate_initializable<T, 6>) return 6;
-        else if constexpr (aggregate_initializable<T, 5>) return 5;
-        else if constexpr (aggregate_initializable<T, 4>) return 4;
-        else if constexpr (aggregate_initializable<T, 3>) return 3;
-        else if constexpr (aggregate_initializable<T, 2>) return 2;
-        else if constexpr (aggregate_initializable<T, 1>) return 1;
-        else return 0;
-    }
+    // template <class T>
+    // consteval std::size_t count_members() {
+    //     if constexpr (aggregate_initializable<T, 16>) return 16;
+    //     else if constexpr (aggregate_initializable<T, 15>) return 15;
+    //     else if constexpr (aggregate_initializable<T, 14>) return 14;
+    //     else if constexpr (aggregate_initializable<T, 13>) return 13;
+    //     else if constexpr (aggregate_initializable<T, 12>) return 12;
+    //     else if constexpr (aggregate_initializable<T, 11>) return 11;
+    //     else if constexpr (aggregate_initializable<T, 10>) return 10;
+    //     else if constexpr (aggregate_initializable<T, 9>) return 9;
+    //     else if constexpr (aggregate_initializable<T, 8>) return 8;
+    //     else if constexpr (aggregate_initializable<T, 7>) return 7;
+    //     else if constexpr (aggregate_initializable<T, 6>) return 6;
+    //     else if constexpr (aggregate_initializable<T, 5>) return 5;
+    //     else if constexpr (aggregate_initializable<T, 4>) return 4;
+    //     else if constexpr (aggregate_initializable<T, 3>) return 3;
+    //     else if constexpr (aggregate_initializable<T, 2>) return 2;
+    //     else if constexpr (aggregate_initializable<T, 1>) return 1;
+    //     else return 0;
+    // }
     
 // (defun generate-cpp-to-tuple (max-count)
 //   (format t "template <typename T>~%auto to_tuple(T&& s) {~%")
@@ -84,18 +82,17 @@ auto to_tuple(T&& s) {
 #undef MVLL_TO_TUPLE_BRANCH
 }
 
-TEST_CASE("proxy interner", "[mvll][wayland][client][reflector]") {
-    using namespace mvll;
-    std::cout << proxy_meta_info<wl_display>::name << std::endl;
-    std::cout << proxy_meta_info<wl_display>::deleter << std::endl;
-    std::cout << to_tuple(*proxy_meta_info<wl_display>::interface_ptr) << std::endl;
-    std::cout << to_tuple(*proxy_meta_info<wl_registry>::interface_ptr) << std::endl;
-    std::cout << to_tuple(*proxy_meta_info<wl_compositor>::interface_ptr) << std::endl;
-    std::cout << typeid (proxy_meta_info<wl_display>::listener_type).name() << std::endl;
-    std::cout << typeid (proxy_meta_info<wl_registry>::listener_type).name() << std::endl;
-    std::cout << typeid (proxy_meta_info<wl_compositor>::listener_type).name() << std::endl;
-    
-}
+// TEST_CASE("proxy interner", "[mvll][wayland][client][reflector]") {
+//     using namespace mvll;
+//     std::cout << proxy_meta_info<wl_display>::name << std::endl;
+//     std::cout << (void*) proxy_meta_info<wl_display>::deleter << std::endl;
+//     std::cout << to_tuple(*proxy_meta_info<wl_display>::interface_ptr) << std::endl;
+//     std::cout << to_tuple(*proxy_meta_info<wl_registry>::interface_ptr) << std::endl;
+//     std::cout << to_tuple(*proxy_meta_info<wl_compositor>::interface_ptr) << std::endl;
+//     std::cout << typeid (proxy_meta_info<wl_display>::listener_type).name() << std::endl;
+//     std::cout << typeid (proxy_meta_info<wl_registry>::listener_type).name() << std::endl;
+//     std::cout << typeid (proxy_meta_info<wl_compositor>::listener_type).name() << std::endl;
+// }
 
 
 // struct hoge {

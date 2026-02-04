@@ -130,9 +130,9 @@ TEST_CASE("conceptual cooperation", "[mvll][cpp2x][generator]") {
     auto detect_starting_drag = [&]() -> generator<bool> {
         auto pivot = cursor;
         while (std::abs(cursor - pivot) < 16.0f) co_yield false;
-        std::cout << pivot << std::endl;
-        std::cout << cursor << std::endl;
-        std::cout << std::abs(cursor - pivot) << std::endl;
+        // std::cout << pivot << std::endl;
+        // std::cout << cursor << std::endl;
+        // std::cout << std::abs(cursor - pivot) << std::endl;
         co_yield true;
     };
     std::vector<generator<bool>> subevents;

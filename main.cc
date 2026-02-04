@@ -27,10 +27,10 @@
     V(xdg_toplevel,                   PROXY_ATTR_HAS_LISTENER)          \
     V(xdg_wm_base,                    PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_manager_v2,          PROXY_ATTR_NONE)                  \
-    V(zwp_tablet_pad_v2,              PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_pad_group_v2,        PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_pad_ring_v2,         PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_pad_strip_v2,        PROXY_ATTR_HAS_LISTENER)          \
+    V(zwp_tablet_pad_v2,              PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_seat_v2,             PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_tool_v2,             PROXY_ATTR_HAS_LISTENER)          \
     V(zwp_tablet_v2,                  PROXY_ATTR_HAS_LISTENER)
@@ -311,12 +311,14 @@ int main() {
                             std::cout << "tool removed: " << tool << std::endl;
                         });
                         tool.on<&zwp_tablet_tool_v2_listener::done>([&](auto) {
-                            std::cout << tool << std::endl;
-                            std::cout << std::tuple(*tool.peek<&zwp_tablet_tool_v2_listener::capability>(),
-                                                    *tool.peek<&zwp_tablet_tool_v2_listener::type>(),
-                                                    *tool.peek<&zwp_tablet_tool_v2_listener::hardware_id_wacom>(),
-                                                    *tool.peek<&zwp_tablet_tool_v2_listener::hardware_serial>()
-                                ) << std::endl;
+                            std::cout << tool
+                                      << "\n  "
+                                      <<
+                                std::tuple(*tool.peek<&zwp_tablet_tool_v2_listener::capability>(),
+                                           *tool.peek<&zwp_tablet_tool_v2_listener::type>(),
+                                           *tool.peek<&zwp_tablet_tool_v2_listener::hardware_id_wacom>(),
+                                           *tool.peek<&zwp_tablet_tool_v2_listener::hardware_serial>()
+                                    ) << std::endl;
                         });
                     }
                 };
@@ -394,9 +396,11 @@ int main() {
                                                                    [[maybe_unused]]uint32_t seq_hi,
                                                                    [[maybe_unused]]uint32_t seq_lo,
                                                                    [[maybe_unused]]uint32_t flags) {
+        feedback.rebind(wp_presentation_feedback(presentation, surface));
         std::cout << "presentation feedback refresh: " << refresh << std::endl;
     });
     feedback.on<&wp_presentation_feedback_listener::discarded>([&](struct wp_presentation_feedback*) {
+        feedback.rebind(wp_presentation_feedback(presentation, surface));
         std::cout << "presentation feedback discarded." << std::endl;
     });
     auto xsurface = proxy{xdg_wm_base_get_xdg_surface(shell, surface)};
@@ -407,8 +411,14 @@ int main() {
     toplevel.fiblet() = [&] -> listener_fiblet<&xdg_toplevel_listener::configure> {
         auto primary = shm_allocate_buffer(shm, buffer_cx, buffer_cy);
         auto secondary = shm_allocate_buffer(shm, buffer_cx, buffer_cy);
-        auto release_callback = [&primary, &secondary](wl_buffer*) {
+        auto release_callback = [&](wl_buffer*) {
             std::swap(primary, secondary);
+            // for (size_t y = 0; y < buffer_cy; ++y) {
+            //     for (size_t x = 0; x < buffer_cx; ++x) {
+            //         color* pixels = std::get<2>(secondary).data();
+            //         *(pixels + y * buffer_cx + x) = color(0, 255, 0, 0);
+            //     }
+            // }
         };
         auto& primary_buffer = std::get<1>(primary);
         auto& secondary_buffer = std::get<1>(secondary);
@@ -440,7 +450,6 @@ int main() {
             }
             frame.on<&wl_callback_listener::done>([&](wl_callback*, std::uint32_t) MVLL_NOEXCEPT {
                 frame.rebind(wl_surface_frame(surface));
-                feedback.rebind(wp_presentation_feedback(presentation, surface));
                 wl_surface_attach(surface, primary_buffer, 0, 0);
                 wl_surface_damage_buffer(surface, 0, 0, buffer_cx, buffer_cy);
                 wl_surface_commit(surface);

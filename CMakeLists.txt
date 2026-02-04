@@ -117,6 +117,7 @@ add_executable(mvll-test
   test/reflector-test.cc
   test/proxy-meta-test.cc
   test/proxy-wrapper-test.cc
+  test/allocator-test.cc
 )
 
 #set_source_files_properties(test/fiblet-test.cc PROPERTIES COMPILE_FLAGS "-O1")
